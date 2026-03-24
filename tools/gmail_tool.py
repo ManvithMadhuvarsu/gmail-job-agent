@@ -34,7 +34,7 @@ CREDENTIALS_PATH = Path("config/credentials.json")
 
 
 def get_gmail_service():
-    """Authenticate and return Gmail API service."""
+    """Authenticate and return Gmail API service. Handles expired/revoked tokens."""
     creds = None
 
     if TOKEN_PATH.exists():
@@ -43,8 +43,15 @@ def get_gmail_service():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"  ⚠️  Token refresh failed: {e}")
+                print("  🔄  Deleting stale token and re-authenticating...")
+                TOKEN_PATH.unlink(missing_ok=True)
+                creds = None
+
+        if not creds:
             if not CREDENTIALS_PATH.exists():
                 raise FileNotFoundError(
                     "\n❌  credentials.json not found!\n"
