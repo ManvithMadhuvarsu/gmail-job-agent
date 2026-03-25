@@ -34,7 +34,13 @@ CREDENTIALS_PATH = Path("config/credentials.json")
 
 
 def get_gmail_service():
-    """Authenticate and return Gmail API service. Handles expired/revoked tokens."""
+    """Authenticate and return Gmail API service.
+    
+    Handles token refresh automatically. If the refresh token has been
+    revoked or expired (common for Google OAuth 'Testing' apps which
+    expire tokens every 7 days), the stale token is deleted and a fresh
+    OAuth flow is triggered.
+    """
     creds = None
 
     if TOKEN_PATH.exists():
@@ -46,11 +52,12 @@ def get_gmail_service():
             try:
                 creds.refresh(Request())
             except Exception as e:
+                # Token was revoked or expired beyond refresh — start fresh
                 print(f"  ⚠️  Token refresh failed: {e}")
-                print("  🔄  Deleting stale token and re-authenticating...")
+                print(f"  🔄  Deleting stale token and re-authenticating...")
                 TOKEN_PATH.unlink(missing_ok=True)
                 creds = None
-
+        
         if not creds:
             if not CREDENTIALS_PATH.exists():
                 raise FileNotFoundError(
@@ -61,7 +68,7 @@ def get_gmail_service():
                     "    4. Download and save as config/credentials.json\n"
                 )
             flow = InstalledAppFlow.from_client_secrets_file(
-                str(CREDENTIALS_PATH), SCOPES
+                str(CREDENTIALS_PATH), SCOPES,
             )
             creds = flow.run_local_server(port=0)
 
