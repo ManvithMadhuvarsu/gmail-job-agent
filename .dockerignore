@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment & Secrets (NEVER copy into image — use volumes/env_file)
+.env
+config/credentials.json
+data/token.pickle
+
+# Runtime data (use volumes instead)
+data/
+
+# Development files
+.git/
+.gitignore
+*.md
+*.zip
+*.log
+output.log
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

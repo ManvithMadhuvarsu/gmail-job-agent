@@ -1,14 +1,26 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-# Upgrade pip and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install system-level dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application source code
+# Install Python dependencies first (layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
 
-# Run the 24/7 daemon by default
+# Create necessary directories
+RUN mkdir -p data config
+
+# Avoid buffered output so logs appear immediately
+ENV PYTHONUNBUFFERED=1
+
+# Entry point — daemon mode for 24/7 operation
 CMD ["python", "daemon.py"]
