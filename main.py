@@ -53,6 +53,8 @@ from tools.gmail_tool import (
 )
 from agents.classifier_agent import process_email
 
+STATS_FILE = Path("data/stats.json")
+
 # ── Label Map ─────────────────────────────────────────────────────────────────
 LABEL_MAP = {
     "REJECTION": os.getenv("LABEL_REJECTION", "Job/Rejection"),
@@ -97,6 +99,52 @@ def save_processed(ids: set):
         id_list = id_list[-MAX_PROCESSED_IDS:]
     with open(PROCESSED_LOG, "w", encoding="utf-8") as f:
         json.dump(id_list, f, indent=2)
+
+
+def _save_daily_stats(stats: dict, drafts: int, errors: int):
+    """Append today's run statistics to a cumulative stats file."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    all_stats = {}
+    if STATS_FILE.exists():
+        try:
+            with open(STATS_FILE, encoding="utf-8") as f:
+                all_stats = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    day_entry = all_stats.get(today, {"runs": 0, "emails": {}, "drafts": 0, "errors": 0})
+    day_entry["runs"] += 1
+    day_entry["drafts"] += drafts
+    day_entry["errors"] += errors
+    for cat, count in stats.items():
+        day_entry["emails"][cat] = day_entry["emails"].get(cat, 0) + count
+    all_stats[today] = day_entry
+
+    # Keep only the last 90 days of stats
+    if len(all_stats) > 90:
+        sorted_keys = sorted(all_stats.keys())
+        for key in sorted_keys[:-90]:
+            del all_stats[key]
+
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_stats, f, indent=2)
+
+
+def _thread_has_draft(service, thread_id: str) -> bool:
+    """Check if a draft already exists for this thread to avoid duplicates."""
+    if not thread_id:
+        return False
+    try:
+        drafts = service.users().drafts().list(userId="me").execute()
+        for draft in drafts.get("drafts", []):
+            draft_detail = service.users().drafts().get(
+                userId="me", id=draft["id"]
+            ).execute()
+            if draft_detail.get("message", {}).get("threadId") == thread_id:
+                return True
+    except Exception:
+        pass  # If we can't check, proceed with creating the draft
+    return False
 
 
 def print_banner():
@@ -228,17 +276,22 @@ def run():
         )
 
         if should_draft:
-            reply_to = email.get("reply_to") or email.get("sender")
-            draft_id = save_draft(
-                service=service,
-                to=reply_to,
-                subject=result.get("draft_subject", f"Re: {email['subject']}"),
-                body=result.get("draft_body", ""),
-                thread_id=email.get("thread_id"),
-            )
-            if draft_id:
-                draft_saved = True
-                drafts_created += 1
+            # Duplicate detection: skip if a draft already exists for this thread
+            if _thread_has_draft(service, email.get("thread_id")):
+                logger.info(f"Draft already exists for thread, skipping: '{email['subject'][:50]}'")
+                print(f"  {Fore.YELLOW}  ↳ Draft already exists for this thread, skipping{Style.RESET_ALL}")
+            else:
+                reply_to = email.get("reply_to") or email.get("sender")
+                draft_id = save_draft(
+                    service=service,
+                    to=reply_to,
+                    subject=result.get("draft_subject", f"Re: {email['subject']}"),
+                    body=result.get("draft_body", ""),
+                    thread_id=email.get("thread_id"),
+                )
+                if draft_id:
+                    draft_saved = True
+                    drafts_created += 1
 
         # ── Mark as processed immediately ─────────────────────────────────────
         processed_ids.add(email["id"])
@@ -270,6 +323,9 @@ def run():
         f"Run complete. processed={total_processed}, drafts={drafts_created}, "
         f"skipped={skipped}, errors={errors}"
     )
+
+    # Persist daily stats
+    _save_daily_stats(stats, drafts_created, errors)
 
 
 if __name__ == "__main__":
