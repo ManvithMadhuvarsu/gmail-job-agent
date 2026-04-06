@@ -114,6 +114,12 @@ docker-compose up -d --build
 ```
 Runs the daemon inside a container with auto-restart.
 
+First-time OAuth in Docker:
+- Keep `GMAIL_OAUTH_LOCAL_PORT=8080` in `.env`
+- Run `docker logs mailai-agent -f`
+- Open the Google auth URL shown in logs, approve access, and let Google redirect back to `http://localhost:8080`
+- Token is saved to `data/token.pickle`; future starts are automatic
+
 Check logs:
 ```bash
 docker logs mailai-agent -f
@@ -169,7 +175,8 @@ All drafts are written using an **HR Manager / Career Strategist** persona:
 | `YOUR_EMAIL` | Your email address | Optional |
 | `YOUR_LINKEDIN` | Your LinkedIn URL | Optional |
 | `SCAN_DAYS` | How many days back to scan | `1` |
-| `POLL_INTERVAL_MINUTES` | Minutes between daemon checks | `15` |
+| `POLL_INTERVAL_MINUTES` | Minutes between daemon checks | `180` |
+| `GMAIL_OAUTH_LOCAL_PORT` | Docker callback port for first OAuth login | `8080` |
 | `USE_OLLAMA` | Use local Ollama model (`true`/`false`) | `false` |
 | `OLLAMA_MODEL` | Ollama model name | `bjoernb/claude-opus-4-5:latest` |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |

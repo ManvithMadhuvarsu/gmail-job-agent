@@ -3,6 +3,8 @@ services:
     build: .
     container_name: mailai-agent
     restart: unless-stopped
+    ports:
+      - "${GMAIL_OAUTH_LOCAL_PORT:-8080}:${GMAIL_OAUTH_LOCAL_PORT:-8080}"
     volumes:
       - ./data:/app/data
       - ./config:/app/config

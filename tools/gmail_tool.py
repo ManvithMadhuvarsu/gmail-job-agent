@@ -37,6 +37,33 @@ TOKEN_PATH = Path("data/token.pickle")
 CREDENTIALS_PATH = Path("config/credentials.json")
 
 
+def _is_headless_runtime() -> bool:
+    """Return True when running in a non-interactive/headless environment."""
+    # Docker containers are typically headless for OAuth browser flow.
+    if Path("/.dockerenv").exists():
+        return True
+    if os.getenv("MAILAI_HEADLESS_AUTH", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return not bool(os.getenv("DISPLAY"))
+
+
+def _run_oauth_flow(flow: InstalledAppFlow):
+    """Run OAuth flow with headless-friendly behavior for containers."""
+    if _is_headless_runtime():
+        oauth_port = int(os.getenv("GMAIL_OAUTH_LOCAL_PORT", "").strip() or 8080)
+        oauth_public_host = os.getenv("GMAIL_OAUTH_PUBLIC_HOST", "").strip() or "localhost"
+        print("\n  🌐 First-time Gmail authorization required.")
+        print(f"  👉 Open the Google auth URL from logs in your browser and complete sign-in.")
+        print(f"  🔌 Waiting for callback on {oauth_public_host}:{oauth_port}...")
+        return flow.run_local_server(
+            host=oauth_public_host,
+            bind_addr="0.0.0.0",
+            port=oauth_port,
+            open_browser=False,
+        )
+    return flow.run_local_server(port=0)
+
+
 def get_gmail_service():
     """Authenticate and return Gmail API service.
 
@@ -46,6 +73,7 @@ def get_gmail_service():
     OAuth flow is triggered.
     """
     creds = None
+    loaded_from_env_token = False
     
     # ── Check for TOKEN_B64 from Environment (Render/Cloud Support) ────────────
     token_b64 = os.getenv("GMAIL_TOKEN_PICKLE_B64")
@@ -54,6 +82,7 @@ def get_gmail_service():
             logger.info("Found GMAIL_TOKEN_PICKLE_B64 in environment.")
             creds_data = base64.b64decode(token_b64)
             creds = pickle.loads(creds_data)
+            loaded_from_env_token = True
         except Exception as e:
             logger.error(f"Failed to decode GMAIL_TOKEN_PICKLE_B64: {e}")
 
@@ -68,12 +97,20 @@ def get_gmail_service():
                 creds.refresh(Request())
                 logger.info("Gmail token refreshed successfully.")
             except Exception as e:
-                # Token was revoked or expired beyond refresh — start fresh
-                logger.warning(f"Token refresh failed: {e}. Re-authenticating...")
+                err_text = str(e)
+                # Token was revoked/expired beyond refresh.
+                logger.warning(f"Token refresh failed: {e}.")
                 print(f"  ⚠️  Token refresh failed: {e}")
-                print(f"  🔄  Deleting stale token and re-authenticating...")
                 TOKEN_PATH.unlink(missing_ok=True)
                 creds = None
+
+                # If stale token comes from env, reauth cannot be done automatically in daemon mode.
+                if loaded_from_env_token and "invalid_grant" in err_text.lower():
+                    raise RuntimeError(
+                        "Google OAuth refresh token is invalid (invalid_grant). "
+                        "Regenerate token.pickle interactively (run `python main.py` once), "
+                        "then update GMAIL_TOKEN_PICKLE_B64 with the new token."
+                    ) from e
 
         if not creds:
             # Check for CREDENTIALS_JSON from Environment (Render/Cloud Support)
@@ -92,7 +129,7 @@ def get_gmail_service():
                     flow = InstalledAppFlow.from_client_secrets_file(
                         str(tmp_cred), SCOPES,
                     )
-                    creds = flow.run_local_server(port=0)
+                    creds = _run_oauth_flow(flow)
                     tmp_cred.unlink() # Cleanup
                 except Exception as e:
                     logger.error(f"Failed to use GMAIL_CREDENTIALS_JSON: {e}")
@@ -109,7 +146,7 @@ def get_gmail_service():
                 flow = InstalledAppFlow.from_client_secrets_file(
                     str(CREDENTIALS_PATH), SCOPES,
                 )
-                creds = flow.run_local_server(port=0)
+                creds = _run_oauth_flow(flow)
                 logger.info("New Gmail OAuth token obtained.")
 
         # Always try to persist new token to file if possible

@@ -2,11 +2,14 @@
 .env
 config/credentials.json
 data/token.pickle
+*.key
+*.key.pub
 
 # Runtime data
 data/
 output.log
 main.zip
+mailai/
 
 # Python cache
 __pycache__/
