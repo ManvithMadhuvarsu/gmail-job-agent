@@ -11,7 +11,13 @@ from dotenv import load_dotenv
 from google_auth_oauthlib.flow import Flow
 
 from main import run
-from tools.gmail_tool import SCOPES, CREDENTIALS_PATH, TOKEN_PATH, save_token_pickle
+from tools.gmail_tool import (
+    SCOPES,
+    CREDENTIALS_PATH,
+    TOKEN_PATH,
+    save_token_pickle,
+    _materialize_credentials_from_env,
+)
 
 
 load_dotenv()
@@ -34,10 +40,14 @@ def _oauth_callback_url(request: Request) -> str:
 
 
 def _build_flow(request: Request) -> Flow:
+    # Railway-friendly: allow providing OAuth client JSON via env var
+    # (GMAIL_CREDENTIALS_JSON) rather than requiring a pre-mounted file.
+    _materialize_credentials_from_env()
     if not CREDENTIALS_PATH.exists():
         raise FileNotFoundError(
             "credentials.json not found at config/credentials.json. "
-            "Upload it as a Railway volume/variable-mounted file."
+            "Provide it either by setting GMAIL_CREDENTIALS_JSON (recommended) "
+            "or by mounting /app/config with credentials.json."
         )
     flow = Flow.from_client_secrets_file(
         str(CREDENTIALS_PATH),

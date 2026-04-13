@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 def get_resilient_llm():
     """Return an LLM: try Ollama first, fall back to Groq Cloud."""
     use_ollama    = os.getenv("USE_OLLAMA", "false").lower() == "true"
+    require_ollama = os.getenv("REQUIRE_OLLAMA", "false").lower() == "true"
     ollama_model  = os.getenv("OLLAMA_MODEL", "llama3")
     ollama_url    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -40,6 +41,8 @@ def get_resilient_llm():
                     logger.info("Ollama reachable. Using Ollama.")
                     return ChatOllama(model=ollama_model, base_url=ollama_url, temperature=0.1)
         except Exception as e:
+            if require_ollama:
+                raise RuntimeError(f"Ollama unreachable and REQUIRE_OLLAMA=true: {e}") from e
             logger.warning(f"Ollama unreachable ({e}). Falling back to Groq.")
             print("  ⚠️  Ollama unreachable. Falling back to Groq Cloud...")
 
@@ -85,6 +88,8 @@ def safe_invoke(prompt: ChatPromptTemplate, inputs: dict) -> str:
         result = chain.invoke(inputs)
         return result.content.strip()
     except Exception as e:
+        if os.getenv("REQUIRE_OLLAMA", "false").lower() == "true":
+            raise
         logger.warning(f"Primary LLM failed: {e}. Trying Groq fallback...")
         print(f"\n  ⚠️  Primary model failed: {e}")
         print("  🔄  Switching to Groq fallback...")
@@ -305,6 +310,8 @@ def skip_node(state: EmailState) -> EmailState:
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 def route_action(state: EmailState) -> Literal["draft_reply", "skip"]:
+    if os.getenv("DISABLE_DRAFTS", "false").lower() == "true":
+        return "skip"
     if state["action"] in {"DRAFT_FEEDBACK", "DRAFT_CONFIRM", "DRAFT_RESPONSE"}:
         return "draft_reply"
     return "skip"

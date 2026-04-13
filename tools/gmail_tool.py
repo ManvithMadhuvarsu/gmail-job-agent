@@ -227,6 +227,11 @@ def fetch_recent_emails(service, days: int = 1) -> list:
     """Fetch emails from the last N days from the inbox."""
     since = (datetime.now() - timedelta(days=days)).strftime("%Y/%m/%d")
     query = f"after:{since} in:inbox"
+    return fetch_emails_by_query(service, query=query, max_total=500)
+
+
+def fetch_emails_by_query(service, query: str, max_total: int = 500) -> list:
+    """Fetch up to max_total emails matching a Gmail search query."""
 
     try:
         messages = []
@@ -245,7 +250,7 @@ def fetch_recent_emails(service, days: int = 1) -> list:
             next_page_token = results.get("nextPageToken")
 
             # Safety cap to avoid infinite loops or memory issues in very large mailboxes
-            if not next_page_token or len(messages) >= 500:
+            if not next_page_token or len(messages) >= max_total:
                 break
 
         emails = []

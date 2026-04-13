@@ -13,3 +13,5 @@ services:
     environment:
       # Ensure host .env values (e.g. POLL_INTERVAL_MINUTES) are applied on every start
       POLL_INTERVAL_MINUTES: ${POLL_INTERVAL_MINUTES:-180}
+      # Allow container to use host Ollama (if running)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}

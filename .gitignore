@@ -8,6 +8,8 @@ data/token.pickle
 # Runtime data
 data/
 output.log
+backfill.log
+backfill.err.log
 main.zip
 mailai/
 
