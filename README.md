@@ -1,220 +1,234 @@
-# 🤖 MailAI — Intelligent Job Email Agent
+# MailAI
 
-An AI-powered agent that **continuously monitors your Gmail**, classifies job application emails, applies labels, and drafts professional reply emails — all running **24/7 via Docker**.
+MailAI is an automated Gmail agent for job-search workflows. It classifies incoming emails, applies structured Gmail labels, and optionally creates draft replies.
 
----
+The project supports local execution (Python), containerized execution (Docker), and cloud deployment (Railway).
 
-## ✨ Features
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Docker Ready](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Railway Deploy](https://img.shields.io/badge/Railway-Deploy-0B0D0E?logo=railway&logoColor=white)](https://railway.app/)
 
-- **🔍 Smart Classification** — Automatically categorizes emails into Rejection, Interview, Follow-Up, Applied, Hold, or Irrelevant
-- **🏷️ Gmail Labels** — Creates and applies organized labels (`Job/Rejection`, `Job/Interview`, etc.)
-- **✍️ Professional Drafts** — Generates multi-paragraph, HR-quality reply drafts using an experienced Career Strategist persona
-- **🚫 No-Reply Detection** — Skips drafting replies to automated `noreply@` addresses
-- **🔄 24/7 Daemon Mode** — Polls your inbox every 15 minutes (configurable)
-- **🐳 Docker Ready** — Deploy with a single `docker-compose up` command
-- **🛡️ Resilient Fallback** — Tries Ollama (local) first, falls back to Groq Cloud automatically
-- **📊 Rate Limit Handling** — Auto-retries on API throttling with graceful backoff
-- **💾 Progress Tracking** — Remembers processed emails; safe to stop and restart anytime
+## Quick Start (60 Seconds)
 
----
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Create your env file:
+   ```bash
+   cp .env.example .env
+   ```
+3. Add `GROQ_API_KEY` in `.env`, then provide Gmail OAuth credentials via `config/credentials.json` or `GMAIL_CREDENTIALS_JSON`.
+4. Run once to authorize Gmail:
+   ```bash
+   python main.py
+   ```
+5. Start continuous mode:
+   ```bash
+   python daemon.py
+   ```
 
-## Stack
+## Core Capabilities
 
-| Component | Tool | Cost |
-|---|---|---|
-| Email | Gmail API (OAuth) | Free |
-| AI Brain (Cloud) | Groq API — LLaMA 3.3 70B | Free (100K tokens/day) |
-| AI Brain (Local) | Ollama — Any Model | Free / Local |
-| Orchestration | LangChain + LangGraph | Free / Open Source |
-| Deployment | Docker + Docker Compose | Free |
+- Classifies job-related emails into actionable categories
+- Applies Gmail labels under a consistent `Job/*` taxonomy
+- Optionally generates reply drafts (never auto-sends)
+- Runs continuously in daemon mode with configurable polling
+- Supports Groq (cloud LLM) and Ollama (local LLM)
+- Supports historical mailbox backfill without relabeling already-labeled messages
 
----
+## Architecture
 
-## Project Structure
+### Main Components
 
-```
-mailai/
-├── main.py                   ← Core orchestrator (classify → label → draft)
-├── daemon.py                 ← 24/7 polling loop (runs main.py on interval)
-├── agents/
-│   ├── __init__.py
-│   └── classifier_agent.py   ← LangGraph agent (classify → decide → draft)
-├── tools/
-│   ├── __init__.py
-│   └── gmail_tool.py         ← Gmail API wrapper (auth, fetch, label, draft)
-├── config/
-│   └── credentials.json      ← ⚠️ YOU ADD THIS (Google OAuth — not committed)
-├── data/
-│   ├── token.pickle          ← Auto-generated after first Gmail login
-│   └── processed.json        ← Tracks already-processed email IDs
-├── .env                      ← YOUR secrets (copy from .env.example)
-├── .env.example              ← Template with all config variables
-├── Dockerfile                ← Container image definition
-├── docker-compose.yml        ← One-command deployment
-├── requirements.txt          ← Python dependencies
-└── .gitignore                ← Keeps secrets out of git
-```
+- `main.py`: one-shot scan and process pipeline
+- `daemon.py`: continuous polling loop for 24/7 operation
+- `agents/classifier_agent.py`: category and action decision logic
+- `tools/gmail_tool.py`: Gmail OAuth, fetch, labels, drafts
+- `backfill.py`: historical labeling pass with date windows
+- `railway_app.py`: web OAuth + background loop for Railway deployments
+- `tools/s3_state.py`: optional S3-compatible token persistence
 
----
+### Data and State
 
-## Setup (One Time — 15 minutes)
+- `config/credentials.json`: Google OAuth client credentials (not committed)
+- `data/token.pickle`: Gmail OAuth token (generated at runtime)
+- `data/processed.json`: processed message tracking
 
-### Step 1 — Get Groq API Key (Free)
-1. Go to [console.groq.com](https://console.groq.com)
-2. Sign up → Create API Key
-3. Copy the key
+## Categories and Labeling
 
-### Step 2 — Set Up Gmail API (Free)
-1. Go to [console.cloud.google.com](https://console.cloud.google.com)
-2. Create a new project (name it anything)
-3. Search "Gmail API" → Enable it
-4. Go to **APIs & Services** → **OAuth consent screen** → Add your email as a **Test User**
-5. Go to "Credentials" → Create Credentials → **OAuth 2.0 Client ID**
-6. Application type: **Desktop app**
-7. Download the JSON file
-8. Save it as `config/credentials.json`
+MailAI uses these categories:
 
-### Step 3 — Configure Environment
-```bash
-cp .env.example .env
-# Edit .env and fill in your GROQ_API_KEY and personal details
-```
+- `REJECTION`
+- `INTERVIEW`
+- `HOLD`
+- `FOLLOW_UP`
+- `APPLIED`
+- `IRRELEVANT`
 
-### Step 4 — Install Dependencies
+Corresponding Gmail labels are created and managed under `Job/*`:
+
+- `Job/Rejection`
+- `Job/Interview`
+- `Job/On-Hold`
+- `Job/Follow-Up`
+- `Job/Applied`
+
+## Local Setup
+
+1. Create and activate a Python 3.11+ environment.
+2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 5 — First Run (Manual)
+3. Create your environment file:
+
+```bash
+cp .env.example .env
+```
+
+4. Provide Google OAuth credentials using one of:
+   - `config/credentials.json` file
+   - `GMAIL_CREDENTIALS_JSON` environment variable (full JSON)
+
+5. Run once:
+
 ```bash
 python main.py
 ```
-A browser window opens asking you to log in to Gmail — approve it.
-After that, it runs silently without needing a browser.
 
----
+## Run Modes
 
-## Running Modes
+### One-Shot Processing
 
-### 🖥️ Manual (One-shot)
 ```bash
 python main.py
 ```
-Processes all new emails once and exits.
 
-### 🔄 Daemon (24/7 polling)
+### Continuous Daemon
+
 ```bash
 python daemon.py
 ```
-Runs continuously, checking for new emails every 15 minutes.
 
-### 🐳 Docker (Production)
+### Backfill Historical Emails
+
 ```bash
-docker-compose up -d --build
+python backfill.py
 ```
-Runs the daemon inside a container with auto-restart.
 
-**OAuth client file (`config/credentials.json`):**
-- The Docker **image does not include** this file (it is listed in `.dockerignore` on purpose).
-- At **runtime**, Compose mounts your project folder: `./config` → `/app/config`, so place the JSON on your machine as `config/credentials.json` before starting.
-- Alternatively, set **`GMAIL_CREDENTIALS_JSON`** in `.env` to the full JSON string; the app will write `config/credentials.json` on startup when the file is missing.
+Backfill supports explicit date windows with:
 
-First-time OAuth in Docker:
-- Keep `GMAIL_OAUTH_LOCAL_PORT=8080` in `.env`
-- Run `docker logs mailai-agent -f`
-- Open the Google auth URL shown in logs, approve access, and let Google redirect back to `http://localhost:8080`
-- Token is saved to `data/token.pickle`; future starts are automatic
+- `BACKFILL_START_DATE` (`YYYY-MM-DD`)
+- `BACKFILL_END_DATE` (`YYYY-MM-DD`)
+- `BACKFILL_WINDOW_DAYS`
+- `BACKFILL_MAX_PER_WINDOW`
 
-Check logs:
+## Docker Deployment
+
+Build and run:
+
+```bash
+docker compose up -d --build
+```
+
+Key notes:
+
+- OAuth callback defaults to port `8080`
+- `config/credentials.json` is intentionally excluded from image build
+- Use mounted `./config` or `GMAIL_CREDENTIALS_JSON`
+- Data persists via mounted `./data`
+
+View logs:
+
 ```bash
 docker logs mailai-agent -f
 ```
 
 Stop:
+
 ```bash
-docker-compose down
+docker compose down
 ```
 
----
+## Railway Deployment
 
-## Email Categories & Actions
+### Service Start Command
 
-| Category | What it means | Action |
-|---|---|---|
-| REJECTION | Company said no | Drafts professional feedback request (skips `noreply@`) |
-| INTERVIEW | Interview invite / next steps | Drafts enthusiastic confirmation reply |
-| HOLD | Application on hold | Labels only |
-| FOLLOW_UP | Recruiter wants more info | Drafts helpful response |
-| APPLIED | Auto-confirmation email | Labels only |
-| IRRELEVANT | Spam / unrelated | Skipped entirely |
+Use:
 
-### Gmail Labels Created Automatically
-```
-Job/
-  ├── Rejection
-  ├── Interview
-  ├── On-Hold
-  ├── Follow-Up
-  └── Applied
-```
-
-### Draft Quality
-All drafts are written using an **HR Manager / Career Strategist** persona:
-- Multi-paragraph structure (150-200 words)
-- Professional business vocabulary
-- Graceful feedback requests for rejections
-- Enthusiastic confirmations for interviews
-- No generic clichés or placeholders
-
-> ⚠️ Drafts are saved to **Gmail Drafts** — NOT auto-sent. You review and send manually.
-
----
-
-## Configuration (.env)
-
-| Variable | Description | Default |
-|---|---|---|
-| `GROQ_API_KEY` | Your Groq API key | Required |
-| `YOUR_NAME` | Your full name (used in draft signatures) | Required |
-| `YOUR_PHONE` | Your phone number | Optional |
-| `YOUR_EMAIL` | Your email address | Optional |
-| `YOUR_LINKEDIN` | Your LinkedIn URL | Optional |
-| `SCAN_DAYS` | How many days back to scan | `1` |
-| `POLL_INTERVAL_MINUTES` | Minutes between daemon checks | `180` |
-| `GMAIL_OAUTH_LOCAL_PORT` | Docker callback port for first OAuth login | `8080` |
-| `USE_OLLAMA` | Use local Ollama model (`true`/`false`) | `false` |
-| `OLLAMA_MODEL` | Ollama model name | `bjoernb/claude-opus-4-5:latest` |
-| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
-
----
-
-## Using Ollama (Local AI — Free & Unlimited)
-
-To run completely locally without any cloud API:
-
-1. Install [Ollama](https://ollama.ai)
-2. Pull a model: `ollama pull llama3`
-3. Update `.env`:
-   ```
-   USE_OLLAMA=true
-   OLLAMA_MODEL=llama3
-   ```
-
-The agent will automatically fall back to Groq Cloud if Ollama is unavailable.
-
----
-
-## Resetting Processed Emails
-
-To reprocess all emails (e.g., for testing):
 ```bash
-rm data/processed.json
+sh -c "uvicorn railway_app:app --host 0.0.0.0 --port $PORT"
 ```
 
----
+### Required Variables
 
-## Security Notes
-- `credentials.json` and `.env` are **never committed** to Git
-- OAuth token stored locally in `data/token.pickle`
-- No email content is stored — only message IDs
-- Groq processes email text to classify — for full privacy, use Ollama (fully local)
+- `PUBLIC_BASE_URL`
+- `GMAIL_CREDENTIALS_JSON`
+- `POLL_INTERVAL_MINUTES`
+- LLM config (`GROQ_API_KEY` and/or Ollama settings)
+
+### Google OAuth Configuration
+
+Use a **Web application** OAuth client in Google Cloud and set:
+
+- Authorized JavaScript origin: `https://<your-domain>`
+- Authorized redirect URI: `https://<your-domain>/oauth/callback`
+
+### Persistence Without Volumes
+
+If persistent volumes are unavailable, enable S3-compatible token storage:
+
+- `MAILAI_STATE_S3_ENABLED=true`
+- `MAILAI_STATE_S3_ENDPOINT_URL=...`
+- `MAILAI_STATE_S3_BUCKET=...`
+- `MAILAI_STATE_S3_PREFIX=mailai`
+- `AWS_ACCESS_KEY_ID=...`
+- `AWS_SECRET_ACCESS_KEY=...`
+- `AWS_REGION=auto`
+
+## Configuration Reference
+
+See `.env.example` for the complete, up-to-date variable list.
+
+Important variables:
+
+- Identity/signature: `YOUR_NAME`, `YOUR_PHONE`, `YOUR_EMAIL`, `YOUR_LINKEDIN`
+- Runtime: `SCAN_DAYS`, `POLL_INTERVAL_MINUTES`
+- Gmail OAuth: `GMAIL_CREDENTIALS_JSON`, `PUBLIC_BASE_URL`
+- LLM: `USE_OLLAMA`, `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, `GROQ_API_KEY`
+- Backfill: `BACKFILL_*`
+
+## Security Best Practices
+
+- Never commit `.env`, `config/credentials.json`, or token files
+- Rotate credentials immediately if exposed
+- Prefer least-privilege API keys
+- Use separate OAuth clients for local and hosted environments
+
+## Troubleshooting
+
+### `redirect_uri_mismatch`
+
+- OAuth client is incorrect type or missing hosted callback URI
+- Use a Web OAuth client and set Railway callback URL exactly
+
+### `invalid_grant` / missing PKCE verifier
+
+- Ensure latest `railway_app.py` is deployed
+- Restart login flow from `/login`
+
+### `credentials.json not found`
+
+- Set `GMAIL_CREDENTIALS_JSON` correctly
+- Or provide `config/credentials.json` in runtime filesystem
+
+### Ollama not reachable from Docker
+
+- Set `OLLAMA_BASE_URL` to a reachable host (for Docker on Windows often `http://host.docker.internal:11434`)
+
+## License
+
+Add your preferred license in a `LICENSE` file before public distribution.
