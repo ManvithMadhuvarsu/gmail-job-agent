@@ -18,6 +18,7 @@ from tools.gmail_tool import (
     save_token_pickle,
     _materialize_credentials_from_env,
 )
+from tools.s3_state import try_persist_file, try_restore_file
 
 
 load_dotenv()
@@ -93,6 +94,8 @@ def _startup():
     # Ensure dirs exist for volume mounts
     Path("data").mkdir(exist_ok=True)
     Path("config").mkdir(exist_ok=True)
+    # If persistent volumes aren't available, optionally restore token from S3-compatible bucket.
+    try_restore_file(TOKEN_PATH)
     _start_daemon_loop_once()
 
 
@@ -147,5 +150,7 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
     flow.fetch_token(code=code)
     creds = flow.credentials
     save_token_pickle(creds)
+    # Persist token so redeploys don't require re-auth (S3-compatible bucket).
+    try_persist_file(TOKEN_PATH)
     return RedirectResponse(url="/")
 
