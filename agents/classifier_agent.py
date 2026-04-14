@@ -8,13 +8,15 @@ LangGraph-based agent that:
 
 import os
 import logging
-from typing import TypedDict, Literal
+from typing import TYPE_CHECKING, TypedDict, Literal
 
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
+
+if TYPE_CHECKING:
+    from langchain_groq import ChatGroq
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -46,6 +48,9 @@ def get_resilient_llm():
             logger.warning(f"Ollama unreachable ({e}). Falling back to Groq.")
             print("  ⚠️  Ollama unreachable. Falling back to Groq Cloud...")
 
+    # Import Groq lazily to avoid heavy deps (e.g., torch) when Ollama-only.
+    from langchain_groq import ChatGroq
+
     logger.info("Using Groq Cloud LLM.")
     return ChatGroq(
         model="llama-3.3-70b-versatile",
@@ -58,16 +63,17 @@ _primary_llm  = None
 _fallback_llm = None
 
 
-def _get_primary() -> ChatGroq | ChatOllama:
+def _get_primary():
     global _primary_llm
     if _primary_llm is None:
         _primary_llm = get_resilient_llm()
     return _primary_llm
 
 
-def _get_fallback() -> ChatGroq:
+def _get_fallback():
     global _fallback_llm
     if _fallback_llm is None:
+        from langchain_groq import ChatGroq
         _fallback_llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             temperature=0.1,
