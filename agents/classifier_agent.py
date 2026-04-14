@@ -20,6 +20,37 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _clip_text(text: str, max_chars: int) -> str:
+    """Limit prompt size to save tokens; keep start of message (headers + lead)."""
+    if not text or max_chars <= 0 or len(text) <= max_chars:
+        return text or ""
+    return text[:max_chars] + "\n\n[...truncated for token efficiency...]"
+
+
+def _classify_body_limit() -> int:
+    return int(os.getenv("LLM_CLASSIFY_BODY_MAX_CHARS", "").strip() or 3200)
+
+
+def _draft_body_limit() -> int:
+    return int(os.getenv("LLM_DRAFT_BODY_MAX_CHARS", "").strip() or 6000)
+
+
+def _groq_model() -> str:
+    return (os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") or "llama-3.3-70b-versatile").strip()
+
+
+def _action_from_category(category: str) -> str:
+    """Fixed mapping — avoids a second LLM call per email (same rules as former ACTION_PROMPT)."""
+    return {
+        "REJECTION": "DRAFT_FEEDBACK",
+        "INTERVIEW": "DRAFT_CONFIRM",
+        "HOLD": "LABEL_ONLY",
+        "FOLLOW_UP": "DRAFT_RESPONSE",
+        "APPLIED": "LABEL_ONLY",
+        "IRRELEVANT": "SKIP",
+    }.get(category, "LABEL_ONLY")
+
+
 # ── LLM Resilient Setup ───────────────────────────────────────────────────────
 def get_resilient_llm():
     """Return an LLM: try Ollama first, fall back to Groq Cloud."""
@@ -48,7 +79,7 @@ def get_resilient_llm():
 
     logger.info("Using Groq Cloud LLM.")
     return ChatGroq(
-        model="llama-3.3-70b-versatile",
+        model=_groq_model(),
         temperature=0.1,
         groq_api_key=os.getenv("GROQ_API_KEY"),
     )
@@ -69,7 +100,7 @@ def _get_fallback() -> ChatGroq:
     global _fallback_llm
     if _fallback_llm is None:
         _fallback_llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model=_groq_model(),
             temperature=0.1,
             groq_api_key=os.getenv("GROQ_API_KEY"),
         )
@@ -89,6 +120,10 @@ def safe_invoke(prompt: ChatPromptTemplate, inputs: dict) -> str:
         return result.content.strip()
     except Exception as e:
         if os.getenv("REQUIRE_OLLAMA", "false").lower() == "true":
+            raise
+        err = str(e).lower()
+        # Rate limits: fallback uses the same Groq model — avoid duplicate token spend.
+        if "429" in err or "rate_limit" in err:
             raise
         logger.warning(f"Primary LLM failed: {e}. Trying Groq fallback...")
         print(f"\n  ⚠️  Primary model failed: {e}")
@@ -112,124 +147,46 @@ class EmailState(TypedDict):
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are an expert email classifier for a job applicant named {candidate_name}.
+    ("system", """Job-email classifier for applicant {candidate_name}. Output ONE token: REJECTION, INTERVIEW, HOLD, FOLLOW_UP, APPLIED, or IRRELEVANT.
 
-Classify the following email into EXACTLY ONE of these categories:
+REJECTION: declined, not selected, not moving forward, regret.
+INTERVIEW: interview, schedule, screening, assessment, test, next round.
+HOLD: under review, shortlist pending, will update later.
+FOLLOW_UP: asks candidate for documents, info, availability, salary, references.
+APPLIED: application received / submission confirmed (often noreply).
+IRRELEVANT: spam, promos, OTP, banks, not job-related.
 
-REJECTION   — Company explicitly states they are not moving forward, application declined, not selected
-INTERVIEW   — Invitation for interview, screening call, technical test, assignment, or "next steps"
-HOLD        — Application under review, waitlisted, will be revisited, no decision yet
-FOLLOW_UP   — Recruiter asking for documents, references, salary expectations, or availability
-APPLIED     — Auto-confirmation/acknowledgement that an application was received
-IRRELEVANT  — Spam, promotions, newsletters, OTPs, bank notifications, non-job emails
-
-Classification Rules:
-- If you see "we regret", "unfortunately", "not moving forward", "not selected" → REJECTION
-- If you see "interview", "schedule", "next round", "test", "assessment" → INTERVIEW
-- If you see "under review", "shortlisting", "will get back" → HOLD
-- If the email asks for something from the candidate (documents, info) → FOLLOW_UP
-- If the sender is "noreply@" with just a confirmation number → APPLIED
-- When in doubt, lean towards IRRELEVANT rather than misclassifying
-
-Respond with ONLY the category label. No explanation, no punctuation."""),
-    ("human", "Subject: {subject}\nFrom: {sender}\n\nEmail Body:\n{body}"),
-])
-
-ACTION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """Based on the email category, determine the exact action to take.
-
-Category → Action mapping:
-REJECTION  → DRAFT_FEEDBACK   (draft a polite, professional feedback request reply)
-INTERVIEW  → DRAFT_CONFIRM    (draft a confirmation and availability reply)
-HOLD       → LABEL_ONLY       (just label it, no reply needed)
-FOLLOW_UP  → DRAFT_RESPONSE   (draft a helpful, complete response)
-APPLIED    → LABEL_ONLY       (just label it, auto-confirmations don't need replies)
-IRRELEVANT → SKIP             (ignore completely)
-
-Respond with ONLY the action label. No explanation."""),
-    ("human", "Category: {category}\nSubject: {subject}\nFrom: {sender}"),
+If unsure, IRRELEVANT. Reply with the single label only."""),
+    ("human", "Subject: {subject}\nFrom: {sender}\n\nBody:\n{body}"),
 ])
 
 DRAFT_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a seasoned HR Manager and Career Strategist drafting a professional email reply for a job candidate.
+    ("system", """Write a professional reply body for a job seeker. Candidate: {name} | {phone} | {email} | {linkedin}
 
-CANDIDATE DETAILS:
-Name:     {name}
-Phone:    {phone}
-Email:    {email}
-LinkedIn: {linkedin}
+Rules:
+- Use recruiter's first name if obvious; else "Dear Hiring Team,".
+- Name the real company and role from the email — no placeholders or brackets.
+- 2–3 short paragraphs, ~120–180 words total, warm and concise.
+- No "I hope this email finds you well", no "To Whom It May Concern".
 
-CRITICAL INSTRUCTIONS:
-1. READ the original email carefully. Extract the company name, role title, and recruiter's first name.
-2. Address the recruiter by their FIRST NAME if visible (e.g., "Dear Sarah," not "Dear HR Team").
-3. Reference the SPECIFIC role and company from their email — never use placeholders like [Company Name].
-4. Your reply MUST be contextually accurate to the content of THIS specific email.
+Action {action}:
+- DRAFT_FEEDBACK: thank them; ask for brief feedback on candidacy; close professionally.
+- DRAFT_CONFIRM: confirm interest; offer availability window; ask what to prepare.
+- DRAFT_RESPONSE: answer what they asked; offer next steps.
 
-════════════════════════════════════════════════
-TEMPLATE FOR REJECTION (DRAFT_FEEDBACK):
-════════════════════════════════════════════════
-Para 1 — Acknowledgment:
-  Thank [Recruiter Name] for keeping them informed. Acknowledge the decision with grace. 
-  Reference the specific role and the company name.
-
-Para 2 — Feedback Request:
-  Politely ask: "Could you share 1-2 areas where my candidacy could have been stronger — 
-  whether in technical depth, specific domain experience, or cultural alignment? 
-  This perspective would be genuinely invaluable for my professional growth."
-
-Para 3 — Forward-Looking Close:
-  Express continued admiration for the company's work. Request to be kept in mind for 
-  future roles. Sign off warmly with full contact details.
-
-════════════════════════════════════════════════
-TEMPLATE FOR INTERVIEW (DRAFT_CONFIRM):
-════════════════════════════════════════════════
-Para 1 — Enthusiastic Acknowledgment:
-  Express genuine excitement. Name the specific role and company. Thank them.
-
-Para 2 — Confirmation & Preparation:
-  Confirm availability (e.g., "I am available on weekdays between 9 AM – 6 PM IST").
-  Ask: "Are there specific topics, case studies, or materials I should prepare 
-  to make the most of our conversation?"
-
-Para 3 — Professional Close:
-  Reiterate excitement. Provide phone number for easy scheduling. Sign off.
-
-════════════════════════════════════════════════
-TEMPLATE FOR FOLLOW-UP (DRAFT_RESPONSE):
-════════════════════════════════════════════════
-Para 1 — Prompt Acknowledgment:
-  Thank them for reaching out. Acknowledge what they asked for.
-
-Para 2 — Direct Response:
-  Address their specific request clearly and completely. If they asked for 
-  documents/resume/details, confirm you will attach them promptly.
-
-Para 3 — Close:
-  Express continued interest. Sign off with contact details.
-
-════════════════════════════════════════════════
-ABSOLUTE RULES:
-════════════════════════════════════════════════
-- ALWAYS 3 paragraphs (2 for simple follow-ups). NEVER one block of text.
-- 150–250 words total.
-- Warm, professional, articulate. Use phrases like "appreciate the transparency",
-  "constructive insights", "long-term alignment", "valuable perspective".
-- BANNED: "I hope this email finds you well", "To Whom It May Concern", any [brackets].
-- END with a proper signature:
-
-  Best regards,
-  {name}
-  {phone}  |  {email}
-  {linkedin}"""),
-    ("human", """Action Type: {action}
-Original Email Subject: {subject}
+End with:
+Best regards,
+{name}
+{phone} | {email}
+{linkedin}"""),
+    ("human", """Action: {action}
+Subject: {subject}
 From: {sender}
 
-Original Email Body (read this carefully to extract names, company, and role):
+Their message:
 {body}
 
-Write the complete reply email body below. Follow the exact paragraph template for this action type. No subject line needed."""),
+Reply body only (no subject line)."""),
 ])
 
 
@@ -237,11 +194,12 @@ Write the complete reply email body below. Follow the exact paragraph template f
 def classify_node(state: EmailState) -> EmailState:
     """Classify the email into a category."""
     email = state["email"]
+    body = _clip_text(email.get("body") or "", _classify_body_limit())
     response = safe_invoke(CLASSIFY_PROMPT, {
         "candidate_name": os.getenv("YOUR_NAME", "the candidate"),
         "subject": email["subject"],
         "sender":  email["sender"],
-        "body":    email["body"],
+        "body":    body,
     })
 
     # Validate — default to IRRELEVANT if unrecognised
@@ -256,28 +214,16 @@ def classify_node(state: EmailState) -> EmailState:
 
 
 def decide_action_node(state: EmailState) -> EmailState:
-    """Decide what action to take for this email."""
-    email    = state["email"]
-    category = state["category"]
-
-    response = safe_invoke(ACTION_PROMPT, {
-        "category": category,
-        "subject":  email["subject"],
-        "sender":   email["sender"],
-    })
-
-    valid_actions = {"DRAFT_FEEDBACK", "DRAFT_CONFIRM", "DRAFT_RESPONSE", "LABEL_ONLY", "SKIP"}
-    action = response.upper().strip().split()[0] if response else "LABEL_ONLY"
-    if action not in valid_actions:
-        action = "LABEL_ONLY"
-
-    logger.info(f"Action decided: {action}")
+    """Map category → action in code (no extra LLM call — saves tokens)."""
+    action = _action_from_category(state["category"])
+    logger.info(f"Action decided: {action} (from category)")
     return {**state, "action": action}
 
 
 def draft_reply_node(state: EmailState) -> EmailState:
     """Generate a professional reply draft."""
     email = state["email"]
+    clipped = _clip_text(email.get("body") or "", _draft_body_limit())
 
     body = safe_invoke(DRAFT_PROMPT, {
         "name":     os.getenv("YOUR_NAME",     "Your Name"),
@@ -287,7 +233,7 @@ def draft_reply_node(state: EmailState) -> EmailState:
         "action":   state["action"],
         "subject":  email["subject"],
         "sender":   email["sender"],
-        "body":     email["body"],
+        "body":     clipped,
     })
 
     original_subject = email["subject"]
