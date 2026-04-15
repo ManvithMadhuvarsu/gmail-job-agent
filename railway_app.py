@@ -72,14 +72,22 @@ def _start_daemon_loop_once():
         interval_minutes = int(os.getenv("POLL_INTERVAL_MINUTES", "").strip() or 180)
         interval_seconds = interval_minutes * 60
         logger.info(f"Daemon loop started. interval_minutes={interval_minutes}")
+        consecutive_errors = 0
         while True:
             try:
                 if _token_exists():
                     run()
+                    consecutive_errors = 0
                 else:
                     logger.warning("No token yet. Waiting for user OAuth at /login")
             except Exception:
-                logger.exception("Error in daemon loop")
+                consecutive_errors += 1
+                logger.exception(f"Error in daemon loop (consecutive: {consecutive_errors})")
+                # Exponential backoff on repeated failures to avoid hammering APIs
+                if consecutive_errors >= 3:
+                    backoff = min(consecutive_errors * 120, 3600)
+                    logger.warning(f"Backing off for {backoff}s after {consecutive_errors} consecutive errors")
+                    time.sleep(backoff)
             time.sleep(interval_seconds)
 
     t = threading.Thread(target=_loop, name="mailai-daemon", daemon=True)
@@ -148,12 +156,13 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
     if state and cookie_state and state != cookie_state:
         return PlainTextResponse("Invalid OAuth state", status_code=400)
     code_verifier = request.cookies.get("oauth_code_verifier")
-    if not code_verifier:
-        return PlainTextResponse("Missing OAuth code verifier cookie. Restart login.", status_code=400)
 
     flow = _build_flow(request)
-    # Exchange code for tokens
-    flow.fetch_token(code=code, code_verifier=code_verifier)
+    # Exchange code for tokens — pass code_verifier only if PKCE was used
+    fetch_kwargs = {"code": code}
+    if code_verifier:
+        fetch_kwargs["code_verifier"] = code_verifier
+    flow.fetch_token(**fetch_kwargs)
     creds = flow.credentials
     save_token_pickle(creds)
     # Persist token so redeploys don't require re-auth (S3-compatible bucket).

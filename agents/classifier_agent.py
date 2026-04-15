@@ -246,16 +246,51 @@ def _heuristic_result(email: dict) -> tuple[str, str] | None:
     body = (email.get("body") or "").lower()
     merged = f"{subject} {sender} {body}"
 
-    if "instahyre" in merged or "verify your email" in merged or "confirm your identity" in merged:
+    # ── Fast-skip obvious non-job emails ──────────────────────────────────
+    irrelevant_patterns = [
+        "instahyre", "verify your email", "confirm your identity",
+        "one-time password", "otp", "password reset", "reset your password",
+        "verify your account", "sign-in attempt", "login alert",
+        "order confirmation", "shipping update", "delivery notification",
+        "unsubscribe from", "subscription confirmed",
+    ]
+    if any(p in merged for p in irrelevant_patterns):
         return ("IRRELEVANT", "SKIP")
-    if _is_noreply(sender) and any(x in merged for x in ["application received", "thank you for applying", "received your application", "candidate id", "application number"]):
+
+    # ── Application confirmations ─────────────────────────────────────────
+    applied_patterns = [
+        "application received", "thank you for applying",
+        "received your application", "candidate id", "application number",
+        "application submitted", "successfully applied",
+        "your application has been", "thanks for applying",
+    ]
+    if _is_noreply(sender) and any(p in merged for p in applied_patterns):
         return ("APPLIED", "LABEL_ONLY")
-    if any(x in merged for x in ["we regret", "unfortunately", "not moving forward", "not selected", "won't be moving forward"]):
+
+    # ── Rejections ────────────────────────────────────────────────────────
+    rejection_patterns = [
+        "we regret", "unfortunately", "not moving forward",
+        "not selected", "won't be moving forward", "will not be moving forward",
+        "decided not to proceed", "other candidates",
+        "not be able to offer", "unable to offer",
+        "position has been filled", "role has been filled",
+    ]
+    if any(p in merged for p in rejection_patterns):
         return ("REJECTION", "DRAFT_FEEDBACK")
-    if any(x in merged for x in ["interview", "assessment", "next round", "schedule", "technical test"]):
+
+    # ── Interviews ────────────────────────────────────────────────────────
+    interview_patterns = [
+        "interview", "assessment", "next round", "schedule",
+        "technical test", "coding challenge", "online test",
+        "would like to invite you", "pleased to invite",
+    ]
+    if any(p in merged for p in interview_patterns):
         return ("INTERVIEW", "DRAFT_CONFIRM")
+
+    # ── On hold / under review ────────────────────────────────────────────
     if any(x in merged for x in ["under review", "on hold", "will get back", "shortlisted"]):
         return ("HOLD", "LABEL_ONLY")
+
     return None
 
 

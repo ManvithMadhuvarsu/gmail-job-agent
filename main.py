@@ -131,17 +131,25 @@ def _save_daily_stats(stats: dict, drafts: int, errors: int):
 
 
 def _thread_has_draft(service, thread_id: str) -> bool:
-    """Check if a draft already exists for this thread to avoid duplicates."""
+    """Check if a draft already exists for this thread to avoid duplicates.
+
+    Uses the drafts.list response which includes message.threadId
+    in each entry, avoiding costly per-draft GET calls.
+    """
     if not thread_id:
         return False
     try:
-        drafts = service.users().drafts().list(userId="me").execute()
-        for draft in drafts.get("drafts", []):
-            draft_detail = service.users().drafts().get(
-                userId="me", id=draft["id"]
+        next_page_token = None
+        while True:
+            resp = service.users().drafts().list(
+                userId="me", pageToken=next_page_token
             ).execute()
-            if draft_detail.get("message", {}).get("threadId") == thread_id:
-                return True
+            for draft in resp.get("drafts", []):
+                if draft.get("message", {}).get("threadId") == thread_id:
+                    return True
+            next_page_token = resp.get("nextPageToken")
+            if not next_page_token:
+                break
     except Exception:
         pass  # If we can't check, proceed with creating the draft
     return False
@@ -173,7 +181,10 @@ def print_result(email: dict, result: dict, draft_saved: bool):
 
 def _is_noreply(sender: str) -> bool:
     """Return True if the sender address looks like a no-reply address."""
-    patterns = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications@", "mailer@", "automated@"]
+    patterns = [
+        "noreply", "no-reply", "donotreply", "do-not-reply",
+        "notifications@", "mailer@", "mailer-daemon", "automated@",
+    ]
     return any(p in sender.lower() for p in patterns)
 
 
