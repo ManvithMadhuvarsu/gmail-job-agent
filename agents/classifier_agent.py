@@ -240,6 +240,22 @@ def _is_noreply(sender: str) -> bool:
     return any(p in s for p in ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications@", "mailer-daemon"])
 
 
+def _email_has_noreply_details(email: dict) -> bool:
+    """Return True when any important mail detail suggests replies should be skipped."""
+    patterns = ["noreply", "no-reply", "donotreply", "do-not-reply"]
+    fields = [
+        email.get("sender", ""),
+        email.get("sender_email", ""),
+        email.get("sender_name", ""),
+        email.get("reply_to", ""),
+        email.get("subject", ""),
+        email.get("body", ""),
+        email.get("snippet", ""),
+    ]
+    merged = " ".join(str(value).lower() for value in fields if value)
+    return any(pattern in merged for pattern in patterns)
+
+
 def _heuristic_result(email: dict) -> tuple[str, str] | None:
     subject = (email.get("subject") or "").lower()
     sender = (email.get("sender") or "").lower()
@@ -341,7 +357,7 @@ def classify_and_action_node(state: EmailState) -> EmailState:
     category = _extract_category(response)
     action = _action_from_category(category)
     # Hard safety: don't burn tokens drafting to no-reply senders.
-    if _is_noreply(email.get("sender", "")) and action.startswith("DRAFT_"):
+    if _email_has_noreply_details(email) and action.startswith("DRAFT_"):
         action = "LABEL_ONLY" if category != "IRRELEVANT" else "SKIP"
 
     logger.info(f"Classified '{email['subject'][:50]}' -> {category}; action={action}")

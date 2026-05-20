@@ -188,6 +188,22 @@ def _is_noreply(sender: str) -> bool:
     return any(p in sender.lower() for p in patterns)
 
 
+def _email_has_noreply_details(email: dict) -> bool:
+    """Return True when any important mail detail suggests replies should be skipped."""
+    patterns = ["noreply", "no-reply", "donotreply", "do-not-reply"]
+    fields = [
+        email.get("sender", ""),
+        email.get("sender_email", ""),
+        email.get("sender_name", ""),
+        email.get("reply_to", ""),
+        email.get("subject", ""),
+        email.get("body", ""),
+        email.get("snippet", ""),
+    ]
+    merged = " ".join(str(value).lower() for value in fields if value)
+    return any(pattern in merged for pattern in patterns)
+
+
 def run():
     logger.info("=" * 50)
     logger.info("MailAI run starting")
@@ -283,7 +299,7 @@ def run():
         should_draft = (
             action in {"DRAFT_FEEDBACK", "DRAFT_CONFIRM", "DRAFT_RESPONSE"}
             and result.get("draft_body")
-            and not _is_noreply(email.get("sender", ""))
+            and not _email_has_noreply_details(email)
         )
 
         if should_draft:
