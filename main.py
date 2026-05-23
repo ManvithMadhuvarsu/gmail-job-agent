@@ -52,6 +52,8 @@ from tools.gmail_tool import (
     save_draft,
 )
 from agents.classifier_agent import process_email
+from agents.calendar_agent import extract_calendar_event
+from tools.calendar_tool import create_calendar_event_once, get_calendar_service
 
 STATS_FILE = Path("data/stats.json")
 
@@ -101,7 +103,7 @@ def save_processed(ids: set):
         json.dump(id_list, f, indent=2)
 
 
-def _save_daily_stats(stats: dict, drafts: int, errors: int):
+def _save_daily_stats(stats: dict, drafts: int, errors: int, calendar_events: int = 0):
     """Append today's run statistics to a cumulative stats file."""
     today = datetime.now().strftime("%Y-%m-%d")
     all_stats = {}
@@ -112,9 +114,10 @@ def _save_daily_stats(stats: dict, drafts: int, errors: int):
         except (json.JSONDecodeError, OSError):
             pass
 
-    day_entry = all_stats.get(today, {"runs": 0, "emails": {}, "drafts": 0, "errors": 0})
+    day_entry = all_stats.get(today, {"runs": 0, "emails": {}, "drafts": 0, "calendar_events": 0, "errors": 0})
     day_entry["runs"] += 1
     day_entry["drafts"] += drafts
+    day_entry["calendar_events"] = day_entry.get("calendar_events", 0) + calendar_events
     day_entry["errors"] += errors
     for cat, count in stats.items():
         day_entry["emails"][cat] = day_entry["emails"].get(cat, 0) + count
@@ -163,7 +166,7 @@ def print_banner():
     print(f"{'═' * 60}{Style.RESET_ALL}\n")
 
 
-def print_result(email: dict, result: dict, draft_saved: bool):
+def print_result(email: dict, result: dict, draft_saved: bool, calendar_saved: bool = False):
     cat    = result.get("category", "IRRELEVANT")
     action = result.get("action", "SKIP")
     color  = CATEGORY_COLOR.get(cat, Fore.WHITE)
@@ -176,6 +179,8 @@ def print_result(email: dict, result: dict, draft_saved: bool):
     print(f"               Action: {action}", end="")
     if draft_saved:
         print(f"  {Fore.GREEN}→ Draft saved ✓{Style.RESET_ALL}", end="")
+    if calendar_saved:
+        print(f"  {Fore.GREEN}-> Calendar event added{Style.RESET_ALL}", end="")
     print("\n")
 
 
@@ -225,6 +230,15 @@ def run():
 
     # ── Ensure Labels Exist ───────────────────────────────────────────────────
     print(f"{Fore.CYAN}🏷️   Setting up Gmail labels...{Style.RESET_ALL}")
+    calendar_service = None
+    if os.getenv("ENABLE_CALENDAR_EVENTS", "true").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            calendar_service = get_calendar_service()
+            print(f"{Fore.GREEN}Calendar connected for important job dates\n{Style.RESET_ALL}")
+        except Exception as e:
+            logger.warning(f"Calendar integration disabled for this run: {e}")
+            print(f"{Fore.YELLOW}Calendar disabled: re-authorize at /login to grant Calendar access.{Style.RESET_ALL}\n")
+
     label_ids = {}
     for category, label_name in LABEL_MAP.items():
         label_ids[category] = get_or_create_label(service, label_name)
@@ -250,6 +264,7 @@ def run():
 
     stats = {k: 0 for k in ["REJECTION", "INTERVIEW", "HOLD", "FOLLOW_UP", "APPLIED", "IRRELEVANT"]}
     drafts_created = 0
+    calendar_events_created = 0
     skipped = 0
     errors = 0
 
@@ -296,6 +311,7 @@ def run():
 
         # ── Save draft if needed ──────────────────────────────────────────────
         draft_saved = False
+        calendar_saved = False
         should_draft = (
             action in {"DRAFT_FEEDBACK", "DRAFT_CONFIRM", "DRAFT_RESPONSE"}
             and result.get("draft_body")
@@ -321,11 +337,23 @@ def run():
                     drafts_created += 1
 
         # ── Mark as processed immediately ─────────────────────────────────────
+        if calendar_service:
+            try:
+                calendar_event = extract_calendar_event(email, result)
+                if calendar_event:
+                    created, event_id = create_calendar_event_once(calendar_service, email, calendar_event)
+                    calendar_saved = bool(created)
+                    if created:
+                        calendar_events_created += 1
+                        logger.info(f"Calendar event created for '{email['subject'][:60]}' | event_id={event_id}")
+            except Exception as e:
+                logger.warning(f"Calendar event extraction failed for '{email['subject'][:60]}': {e}")
+
         processed_ids.add(email["id"])
         save_processed(processed_ids)   # Write after every email for crash-safety
 
-        print_result(email, result, draft_saved)
-        logger.info(f"[{category}] {action} | subject='{email['subject'][:60]}' | draft={draft_saved}")
+        print_result(email, result, draft_saved, calendar_saved)
+        logger.info(f"[{category}] {action} | subject='{email['subject'][:60]}' | draft={draft_saved} | calendar={calendar_saved}")
 
         # Pacing delay to avoid API burst limits
         time.sleep(1.5)
@@ -342,17 +370,18 @@ def run():
 
     print(f"\n    {Fore.GREEN}📝 Drafts saved:          {drafts_created}{Style.RESET_ALL}")
     print(f"    ⏭️  Skipped (already done): {skipped}")
+    print(f"    {Fore.GREEN}Calendar events added:   {calendar_events_created}{Style.RESET_ALL}")
     if errors:
         print(f"    {Fore.RED}💥 Emails with errors:    {errors}{Style.RESET_ALL}")
     print(f"\n{Fore.CYAN}✅  Done — check Gmail Drafts before sending!{Style.RESET_ALL}\n")
 
     logger.info(
         f"Run complete. processed={total_processed}, drafts={drafts_created}, "
-        f"skipped={skipped}, errors={errors}"
+        f"calendar_events={calendar_events_created}, skipped={skipped}, errors={errors}"
     )
 
     # Persist daily stats
-    _save_daily_stats(stats, drafts_created, errors)
+    _save_daily_stats(stats, drafts_created, errors, calendar_events_created)
 
 
 if __name__ == "__main__":

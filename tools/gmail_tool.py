@@ -25,13 +25,16 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Gmail API scopes
-SCOPES = [
+GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.labels",
 ]
+CALENDAR_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+]
+SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES
 
 TOKEN_PATH = Path("data/token.pickle")
 CREDENTIALS_PATH = Path("config/credentials.json")
@@ -114,14 +117,25 @@ def materialize_token_pickle_from_env() -> bool:
     return True
 
 
-def get_gmail_service():
-    """Authenticate and return Gmail API service.
+def _credentials_have_scopes(creds, required_scopes: list[str]) -> bool:
+    """Return True if the token already has every required OAuth scope."""
+    if not required_scopes:
+        return True
+    try:
+        return bool(creds.has_scopes(required_scopes))
+    except Exception:
+        granted = set(getattr(creds, "scopes", None) or [])
+        return set(required_scopes).issubset(granted)
 
-    Handles token refresh automatically. If the refresh token has been
-    revoked or expired (common for Google OAuth 'Testing' apps which
-    expire tokens every 7 days), the stale token is deleted and a fresh
-    OAuth flow is triggered.
-    """
+
+def _missing_scopes(creds, required_scopes: list[str]) -> list[str]:
+    granted = set(getattr(creds, "scopes", None) or [])
+    return [scope for scope in required_scopes if scope not in granted]
+
+
+def get_google_credentials(required_scopes: list[str] | None = None):
+    """Authenticate and return Google OAuth credentials."""
+    required_scopes = required_scopes or SCOPES
     _materialize_credentials_from_env()
 
     creds = None
@@ -142,6 +156,18 @@ def get_gmail_service():
     if not creds and TOKEN_PATH.exists():
         with open(TOKEN_PATH, "rb") as f:
             creds = pickle.load(f)
+
+    if creds and not _credentials_have_scopes(creds, required_scopes):
+        missing = _missing_scopes(creds, required_scopes)
+        logger.warning(f"Google OAuth token missing required scopes: {missing}")
+        TOKEN_PATH.unlink(missing_ok=True)
+        if loaded_from_env_token or _is_headless_runtime():
+            raise RuntimeError(
+                "Google OAuth token is missing required scopes. "
+                "Visit /login to re-authorize MailAI, then update "
+                "GMAIL_TOKEN_PICKLE_B64 if you use env-backed tokens."
+            )
+        creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -190,6 +216,18 @@ def get_gmail_service():
         except Exception:
             pass # Ignore if disk is read-only (common in some cloud environments)
 
+    if creds and not _credentials_have_scopes(creds, required_scopes):
+        raise RuntimeError(
+            "Google OAuth completed but the token still lacks required scopes. "
+            "Re-run /login and accept all requested permissions."
+        )
+
+    return creds
+
+
+def get_gmail_service():
+    """Authenticate and return Gmail API service."""
+    creds = get_google_credentials(required_scopes=GMAIL_SCOPES)
     return build("gmail", "v1", credentials=creds)
 
 

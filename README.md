@@ -33,6 +33,7 @@ The project supports local execution (Python), containerized execution (Docker),
 - Classifies job-related emails into actionable categories
 - Applies Gmail labels under a consistent `Job/*` taxonomy
 - Optionally generates reply drafts (never auto-sends)
+- Adds important interviews, meetings, assessments, tests, and submission deadlines to Google Calendar
 - Runs continuously in daemon mode with configurable polling
 - Supports Groq (cloud LLM) and Ollama (local LLM)
 - Supports historical mailbox backfill without relabeling already-labeled messages
@@ -44,7 +45,9 @@ The project supports local execution (Python), containerized execution (Docker),
 - `main.py`: one-shot scan and process pipeline
 - `daemon.py`: continuous polling loop for 24/7 operation
 - `agents/classifier_agent.py`: category and action decision logic
+- `agents/calendar_agent.py`: important-date extraction for Calendar events
 - `tools/gmail_tool.py`: Gmail OAuth, fetch, labels, drafts
+- `tools/calendar_tool.py`: Google Calendar event creation and duplicate prevention
 - `backfill.py`: historical labeling pass with date windows
 - `railway_app.py`: web OAuth + background loop for Railway deployments
 - `tools/s3_state.py`: optional S3-compatible token persistence
@@ -54,6 +57,25 @@ The project supports local execution (Python), containerized execution (Docker),
 - `config/credentials.json`: Google OAuth client credentials (not committed)
 - `data/token.pickle`: Gmail OAuth token (generated at runtime)
 - `data/processed.json`: processed message tracking
+
+## Google Calendar Reminders
+
+MailAI can create Google Calendar events only for important job dates, such as:
+
+- Interviews and recruiter meetings
+- Assessments, coding challenges, and tests
+- Assignment, document, or submission deadlines
+
+It does not create events for every email. It skips vague updates, application confirmations,
+rejections, newsletters, OTPs, and requests for availability that do not include a concrete date.
+
+Calendar events are de-duplicated with a private `mailaiEmailId` marker, so the same email does
+not create repeated reminders.
+
+Important: this feature adds the Google Calendar Events OAuth scope. Enable the Google Calendar API
+in the same Google Cloud project, then open `/login` once after deployment and complete Google consent
+again. If you use `GMAIL_TOKEN_PICKLE_B64`, regenerate that value from the newly authorized
+`data/token.pickle`.
 
 ## Categories and Labeling
 
@@ -216,6 +238,7 @@ Important variables:
 - Runtime: `SCAN_DAYS`, `POLL_INTERVAL_MINUTES`
 - Gmail OAuth: `GMAIL_CREDENTIALS_JSON`, `PUBLIC_BASE_URL`
 - LLM: `USE_OLLAMA`, `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, `GROQ_API_KEY`
+- Calendar: `ENABLE_CALENDAR_EVENTS`, `GOOGLE_CALENDAR_ID`, `CALENDAR_TIMEZONE`, `CALENDAR_REMINDER_MINUTES`
 - Backfill: `BACKFILL_*`
 
 ## Security Best Practices
