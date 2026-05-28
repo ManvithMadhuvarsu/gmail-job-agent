@@ -1,4 +1,9 @@
-from agents.calendar_agent import should_check_calendar_event
+from agents.calendar_agent import (
+    _extract_json,
+    _normalize_event,
+    _reference_date,
+    should_check_calendar_event,
+)
 
 
 def test_calendar_gate_allows_interview_with_schedule_keyword(monkeypatch):
@@ -35,3 +40,30 @@ def test_calendar_gate_can_be_disabled(monkeypatch):
 
     assert should_check_calendar_event(email, result) is False
 
+
+def test_reference_date_uses_email_received_date():
+    email = {"date": "Mon, 04 May 2026 09:30:00 +0530"}
+
+    assert _reference_date(email) == "2026-05-04"
+
+
+def test_extract_json_accepts_extra_text_after_object():
+    raw = '{"should_create": false, "reason": "no fixed date", "confidence": 0.2}\nextra'
+
+    assert _extract_json(raw)["should_create"] is False
+
+
+def test_normalize_event_converts_invented_midnight_to_all_day():
+    event = {
+        "should_create": True,
+        "event_type": "ASSESSMENT",
+        "start": "2026-05-18T00:00:00+05:30",
+        "end": "",
+        "all_day": False,
+        "confidence": 0.9,
+    }
+
+    normalized = _normalize_event(event)
+
+    assert normalized["all_day"] is True
+    assert normalized["start"] == "2026-05-18"

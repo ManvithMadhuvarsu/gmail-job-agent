@@ -148,6 +148,25 @@ Backfill supports explicit date windows with:
 - `BACKFILL_WINDOW_DAYS`
 - `BACKFILL_MAX_PER_WINDOW`
 
+### Backfill Calendar Events Only
+
+```bash
+python scripts/backfill_calendar_events.py
+```
+
+This scans the configured date window, disables draft generation, leaves Gmail labels unchanged,
+and creates only de-duplicated Calendar events for important interviews, meetings, assessments,
+tests, submissions, and deadlines.
+
+Calendar backfill supports:
+
+- `CALENDAR_BACKFILL_DAYS` (default `30`)
+- `CALENDAR_BACKFILL_START_DATE` (`YYYY-MM-DD`)
+- `CALENDAR_BACKFILL_END_DATE` (`YYYY-MM-DD`)
+- `CALENDAR_BACKFILL_MAX_TOTAL`
+- `CALENDAR_BACKFILL_SLEEP_SECONDS`
+- `CALENDAR_BACKFILL_TERMS` for optional comma-separated Gmail search terms
+
 ## Docker Deployment
 
 Build and run:

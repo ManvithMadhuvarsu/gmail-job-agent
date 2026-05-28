@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -53,7 +54,7 @@ Do NOT create events for:
 - requests for availability with no fixed date/time
 - newsletters, OTPs, promos, or no-reply transactional mail
 
-Current date: {current_date}
+Reference date for resolving relative dates and dates without a year: {reference_date}
 Default timezone: {timezone}
 
 JSON shape:
@@ -73,8 +74,9 @@ JSON shape:
 If no safe concrete calendar event exists, return:
 {{"should_create": false, "reason": "why not", "confidence": 0.0}}
 
-If the email gives a date without a year, infer the next future occurrence from the current date.
-If the email gives a deadline without a time, use all_day=true and start as YYYY-MM-DD."""),
+If the email gives a date without a year or a relative date, infer it from the reference date.
+If the email gives a date but no explicit time, use all_day=true and start as YYYY-MM-DD.
+Never invent a midnight time for date-only events."""),
     ("human", """Mail category: {category}
 Mail action: {action}
 Received date header: {email_date}
@@ -110,6 +112,17 @@ def _min_confidence() -> float:
         return 0.70
 
 
+def _reference_date(email: dict) -> str:
+    """Use the email's received date as the anchor for backfilled relative dates."""
+    raw = (email.get("date") or "").strip()
+    if raw:
+        try:
+            return parsedate_to_datetime(raw).date().isoformat()
+        except (TypeError, ValueError, IndexError, AttributeError):
+            logger.debug(f"Could not parse email date for calendar extraction: {raw!r}")
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def _merged_text(email: dict) -> str:
     fields = [
         email.get("subject", ""),
@@ -138,14 +151,18 @@ def _extract_json(raw: str) -> dict:
     text = (raw or "").strip()
     text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"```$", "", text).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
-        raise
+    candidates = [text]
+    start = text.find("{")
+    if start > 0:
+        candidates.append(text[start:])
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            parsed, _ = decoder.raw_decode(candidate)
+            return parsed
+        except json.JSONDecodeError:
+            continue
+    raise json.JSONDecodeError("No JSON object found", text, 0)
 
 
 def _valid_event(event: dict) -> bool:
@@ -159,6 +176,20 @@ def _valid_event(event: dict) -> bool:
     return event_type in {"INTERVIEW", "MEETING", "ASSESSMENT", "TEST", "SUBMISSION", "DEADLINE"}
 
 
+def _normalize_event(event: dict) -> dict:
+    """Normalize safe LLM output quirks before creating Calendar events."""
+    start = str(event.get("start", ""))
+    midnight_without_end = (
+        not event.get("all_day")
+        and re.search(r"T00:00(?::00)?", start)
+        and not event.get("end")
+    )
+    if midnight_without_end and re.match(r"\d{4}-\d{2}-\d{2}", start):
+        event["all_day"] = True
+        event["start"] = start[:10]
+    return event
+
+
 def extract_calendar_event(email: dict, result: dict) -> dict | None:
     """Return a normalized calendar event payload, or None if nothing important."""
     if not should_check_calendar_event(email, result):
@@ -167,7 +198,7 @@ def extract_calendar_event(email: dict, result: dict) -> dict | None:
     body = (email.get("body") or email.get("snippet") or "").strip()
     body = body[:_max_chars()]
     response = safe_invoke(CALENDAR_PROMPT, {
-        "current_date": datetime.now().strftime("%Y-%m-%d"),
+        "reference_date": _reference_date(email),
         "timezone": _timezone_name(),
         "category": result.get("category", "IRRELEVANT"),
         "action": result.get("action", "SKIP"),
@@ -191,5 +222,4 @@ def extract_calendar_event(email: dict, result: dict) -> dict | None:
     event["timezone"] = event.get("timezone") or _timezone_name()
     event["title"] = event.get("title") or f"{event['event_type'].title()}: {email.get('subject', '')}"
     event["description"] = event.get("description") or email.get("snippet", "")
-    return event
-
+    return _normalize_event(event)
