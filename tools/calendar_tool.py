@@ -16,6 +16,17 @@ from tools.gmail_tool import CALENDAR_SCOPES, get_google_credentials
 logger = logging.getLogger(__name__)
 
 
+def _calendar_api_setup_hint(error: HttpError) -> str:
+    """Return a clear setup hint for the most common Calendar API project issue."""
+    text = str(error)
+    if "accessNotConfigured" in text or "calendar-json.googleapis.com" in text:
+        return (
+            " Google Calendar API is disabled for this OAuth project. "
+            "Enable it in Google Cloud Console, then rerun MailAI."
+        )
+    return ""
+
+
 def get_calendar_service():
     """Authenticate and return a Google Calendar API service."""
     creds = get_google_credentials(required_scopes=CALENDAR_SCOPES)
@@ -136,7 +147,10 @@ def _existing_event_id(service, email_id: str) -> str | None:
         items = resp.get("items", [])
         return items[0].get("id") if items else None
     except HttpError as e:
-        logger.warning(f"Calendar duplicate check failed for email {email_id}: {e}")
+        logger.warning(
+            f"Calendar duplicate check failed for email {email_id}: {e}"
+            f"{_calendar_api_setup_hint(e)}"
+        )
         return None
 
 
@@ -158,7 +172,12 @@ def create_calendar_event_once(service, email: dict, event: dict) -> tuple[bool,
         event_id = created.get("id")
         logger.info(f"Calendar event created for email {email_id}: {event_id}")
         return True, event_id
-    except (HttpError, ValueError) as e:
+    except HttpError as e:
+        logger.warning(
+            f"Failed to create Calendar event for email {email_id}: {e}"
+            f"{_calendar_api_setup_hint(e)}"
+        )
+        return False, None
+    except ValueError as e:
         logger.warning(f"Failed to create Calendar event for email {email_id}: {e}")
         return False, None
-

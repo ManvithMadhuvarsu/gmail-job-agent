@@ -60,6 +60,8 @@ def _is_headless_runtime() -> bool:
         return True
     if os.getenv("MAILAI_HEADLESS_AUTH", "").strip().lower() in {"1", "true", "yes"}:
         return True
+    if os.name == "nt":
+        return False
     return not bool(os.getenv("DISPLAY"))
 
 
@@ -227,7 +229,10 @@ def get_google_credentials(required_scopes: list[str] | None = None):
 
 def get_gmail_service():
     """Authenticate and return Gmail API service."""
-    creds = get_google_credentials(required_scopes=GMAIL_SCOPES)
+    required_scopes = SCOPES
+    if os.getenv("ENABLE_CALENDAR_EVENTS", "true").strip().lower() in {"0", "false", "no", "off"}:
+        required_scopes = GMAIL_SCOPES
+    creds = get_google_credentials(required_scopes=required_scopes)
     return build("gmail", "v1", credentials=creds)
 
 
