@@ -54,8 +54,16 @@ from tools.gmail_tool import (
 from agents.classifier_agent import process_email
 from agents.calendar_agent import extract_calendar_event
 from tools.calendar_tool import create_calendar_event_once, get_calendar_service
+from tools.license_tool import require_valid_license
+from tools.audit_log import record_action
+from tools.atomic_io import atomic_write_json
+from tools.runtime_state import record_cycle
 
 STATS_FILE = Path("data/stats.json")
+
+
+def _dry_run_enabled() -> bool:
+    return os.getenv("MAILAI_DRY_RUN", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # ── Label Map ─────────────────────────────────────────────────────────────────
 LABEL_MAP = {
@@ -93,18 +101,15 @@ def load_processed() -> set:
 
 
 def save_processed(ids: set):
-    """Persist processed email IDs, trimming oldest if set grows too large."""
-    PROCESSED_LOG.parent.mkdir(exist_ok=True)
+    """Persist processed email IDs atomically, trimming oldest if too large."""
     id_list = list(ids)
-    # Trim if too large — keep the most recent IDs (they're appended at the end)
     if len(id_list) > MAX_PROCESSED_IDS:
         id_list = id_list[-MAX_PROCESSED_IDS:]
-    with open(PROCESSED_LOG, "w", encoding="utf-8") as f:
-        json.dump(id_list, f, indent=2)
+    atomic_write_json(PROCESSED_LOG, id_list)
 
 
 def _save_daily_stats(stats: dict, drafts: int, errors: int, calendar_events: int = 0):
-    """Append today's run statistics to a cumulative stats file."""
+    """Append today's run statistics to a cumulative stats file (atomic)."""
     today = datetime.now().strftime("%Y-%m-%d")
     all_stats = {}
     if STATS_FILE.exists():
@@ -123,14 +128,12 @@ def _save_daily_stats(stats: dict, drafts: int, errors: int, calendar_events: in
         day_entry["emails"][cat] = day_entry["emails"].get(cat, 0) + count
     all_stats[today] = day_entry
 
-    # Keep only the last 90 days of stats
     if len(all_stats) > 90:
         sorted_keys = sorted(all_stats.keys())
         for key in sorted_keys[:-90]:
             del all_stats[key]
 
-    with open(STATS_FILE, "w", encoding="utf-8") as f:
-        json.dump(all_stats, f, indent=2)
+    atomic_write_json(STATS_FILE, all_stats)
 
 
 def _thread_has_draft(service, thread_id: str) -> bool:
@@ -213,6 +216,23 @@ def run():
     logger.info("=" * 50)
     logger.info("MailAI run starting")
     print_banner()
+
+    dry_run = _dry_run_enabled()
+    if dry_run:
+        print(f"{Fore.YELLOW}DRY RUN: classifying only. No labels, drafts, or calendar events will be applied.{Style.RESET_ALL}\n")
+        logger.info("MAILAI_DRY_RUN=true — write actions are disabled this run.")
+
+    run_started = time.time()
+    run_error: str | None = None
+
+    try:
+        license_status = require_valid_license()
+        logger.info(f"License status: tier={license_status.tier}, valid={license_status.valid}")
+    except RuntimeError as e:
+        logger.critical(f"MailAI license check failed: {e}")
+        print(f"{Fore.RED}MailAI license required: {e}{Style.RESET_ALL}")
+        record_cycle(processed=0, drafts=0, calendar_events=0, errors=1, dry_run=dry_run, error=str(e))
+        return
 
     # ── Authenticate ──────────────────────────────────────────────────────────
     print(f"{Fore.CYAN}🔑  Authenticating with Gmail...{Style.RESET_ALL}")
@@ -306,12 +326,23 @@ def run():
         stats[category] = stats.get(category, 0) + 1
 
         # ── Apply Gmail label ─────────────────────────────────────────────────
+        applied_label_id: str | None = None
+        applied_label_name: str | None = None
         if category in label_ids and label_ids[category]:
-            apply_label(service, email["id"], label_ids[category])
+            target_label_id = label_ids[category]
+            target_label_name = LABEL_MAP.get(category)
+            if dry_run:
+                applied_label_id = target_label_id
+                applied_label_name = target_label_name
+            elif apply_label(service, email["id"], target_label_id):
+                applied_label_id = target_label_id
+                applied_label_name = target_label_name
 
         # ── Save draft if needed ──────────────────────────────────────────────
         draft_saved = False
+        draft_id_value: str | None = None
         calendar_saved = False
+        calendar_event_id: str | None = None
         should_draft = (
             action in {"DRAFT_FEEDBACK", "DRAFT_CONFIRM", "DRAFT_RESPONSE"}
             and result.get("draft_body")
@@ -319,41 +350,63 @@ def run():
         )
 
         if should_draft:
-            # Duplicate detection: skip if a draft already exists for this thread
             if _thread_has_draft(service, email.get("thread_id")):
                 logger.info(f"Draft already exists for thread, skipping: '{email['subject'][:50]}'")
                 print(f"  {Fore.YELLOW}  ↳ Draft already exists for this thread, skipping{Style.RESET_ALL}")
+            elif dry_run:
+                draft_saved = True
+                drafts_created += 1
             else:
                 reply_to = email.get("reply_to") or email.get("sender")
-                draft_id = save_draft(
+                draft_id_value = save_draft(
                     service=service,
                     to=reply_to,
                     subject=result.get("draft_subject", f"Re: {email['subject']}"),
                     body=result.get("draft_body", ""),
                     thread_id=email.get("thread_id"),
                 )
-                if draft_id:
+                if draft_id_value:
                     draft_saved = True
                     drafts_created += 1
 
-        # ── Mark as processed immediately ─────────────────────────────────────
-        if calendar_service:
+        # ── Calendar event for important dates ───────────────────────────────
+        if calendar_service or dry_run:
             try:
                 calendar_event = extract_calendar_event(email, result)
                 if calendar_event:
-                    created, event_id = create_calendar_event_once(calendar_service, email, calendar_event)
-                    calendar_saved = bool(created)
-                    if created:
+                    if dry_run:
+                        calendar_saved = True
                         calendar_events_created += 1
-                        logger.info(f"Calendar event created for '{email['subject'][:60]}' | event_id={event_id}")
+                    else:
+                        created, event_id = create_calendar_event_once(calendar_service, email, calendar_event)
+                        calendar_saved = bool(created)
+                        calendar_event_id = event_id
+                        if created:
+                            calendar_events_created += 1
+                            logger.info(f"Calendar event created for '{email['subject'][:60]}' | event_id={event_id}")
             except Exception as e:
                 logger.warning(f"Calendar event extraction failed for '{email['subject'][:60]}': {e}")
 
+        record_action(
+            email=email,
+            category=category,
+            action=action,
+            label_id=applied_label_id,
+            label_name=applied_label_name,
+            draft_id=draft_id_value,
+            calendar_event_id=calendar_event_id,
+            dry_run=dry_run,
+            rule_id=result.get("rule_id"),
+        )
+
         processed_ids.add(email["id"])
-        save_processed(processed_ids)   # Write after every email for crash-safety
+        save_processed(processed_ids)
 
         print_result(email, result, draft_saved, calendar_saved)
-        logger.info(f"[{category}] {action} | subject='{email['subject'][:60]}' | draft={draft_saved} | calendar={calendar_saved}")
+        logger.info(
+            f"[{category}] {action} | subject='{email['subject'][:60]}' | "
+            f"draft={draft_saved} | calendar={calendar_saved} | dry_run={dry_run}"
+        )
 
         # Pacing delay to avoid API burst limits
         time.sleep(1.5)
@@ -368,20 +421,33 @@ def run():
             color = CATEGORY_COLOR.get(cat, Fore.WHITE)
             print(f"    {color}{cat:<14}{Style.RESET_ALL}  {count}")
 
-    print(f"\n    {Fore.GREEN}📝 Drafts saved:          {drafts_created}{Style.RESET_ALL}")
+    draft_label = "Drafts would-save" if dry_run else "Drafts saved"
+    cal_label = "Calendar events (planned)" if dry_run else "Calendar events added"
+    print(f"\n    {Fore.GREEN}📝 {draft_label}:        {drafts_created}{Style.RESET_ALL}")
     print(f"    ⏭️  Skipped (already done): {skipped}")
-    print(f"    {Fore.GREEN}Calendar events added:   {calendar_events_created}{Style.RESET_ALL}")
+    print(f"    {Fore.GREEN}{cal_label}:   {calendar_events_created}{Style.RESET_ALL}")
     if errors:
         print(f"    {Fore.RED}💥 Emails with errors:    {errors}{Style.RESET_ALL}")
-    print(f"\n{Fore.CYAN}✅  Done — check Gmail Drafts before sending!{Style.RESET_ALL}\n")
+    if dry_run:
+        print(f"\n{Fore.YELLOW}Dry run only. Inbox was not modified.{Style.RESET_ALL}\n")
+    else:
+        print(f"\n{Fore.CYAN}✅  Done — check Gmail Drafts before sending!{Style.RESET_ALL}\n")
 
     logger.info(
         f"Run complete. processed={total_processed}, drafts={drafts_created}, "
-        f"calendar_events={calendar_events_created}, skipped={skipped}, errors={errors}"
+        f"calendar_events={calendar_events_created}, skipped={skipped}, errors={errors}, dry_run={dry_run}"
     )
 
-    # Persist daily stats
     _save_daily_stats(stats, drafts_created, errors, calendar_events_created)
+    record_cycle(
+        processed=total_processed,
+        drafts=drafts_created,
+        calendar_events=calendar_events_created,
+        errors=errors,
+        dry_run=dry_run,
+        error=run_error,
+        duration_seconds=time.time() - run_started,
+    )
 
 
 if __name__ == "__main__":
