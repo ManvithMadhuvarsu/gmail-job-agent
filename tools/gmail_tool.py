@@ -418,6 +418,30 @@ def apply_label(service, message_id: str, label_id: str) -> bool:
         return False
 
 
+def remove_label(service, message_id: str, label_id: str) -> bool:
+    """Remove a label from a Gmail message. Returns True on success."""
+    try:
+        service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"removeLabelIds": [label_id]},
+        ).execute()
+        return True
+    except HttpError as e:
+        logger.warning(f"Failed to remove label from {message_id}: {e}")
+        return False
+
+
+def delete_draft(service, draft_id: str) -> bool:
+    """Delete a Gmail draft. Returns True on success."""
+    try:
+        service.users().drafts().delete(userId="me", id=draft_id).execute()
+        return True
+    except HttpError as e:
+        logger.warning(f"Failed to delete draft {draft_id}: {e}")
+        return False
+
+
 def save_draft(service, to: str, subject: str, body: str, thread_id: str = None) -> str | None:
     """Save an email as a Gmail draft (does NOT send automatically)."""
     try:

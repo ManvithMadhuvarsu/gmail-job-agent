@@ -154,6 +154,22 @@ def _existing_event_id(service, email_id: str) -> str | None:
         return None
 
 
+def delete_calendar_event(service, event_id: str) -> bool:
+    """Delete a Calendar event by id. Returns True on success."""
+    if not event_id:
+        return False
+    try:
+        service.events().delete(
+            calendarId=_calendar_id(),
+            eventId=event_id,
+            sendUpdates="none",
+        ).execute()
+        return True
+    except HttpError as e:
+        logger.warning(f"Failed to delete Calendar event {event_id}: {e}")
+        return False
+
+
 def create_calendar_event_once(service, email: dict, event: dict) -> tuple[bool, str | None]:
     """Create one Calendar event for this email if one does not already exist."""
     email_id = email.get("id", "")
