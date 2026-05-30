@@ -10,6 +10,34 @@ def _esc(value: Any) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
+_LEVEL_COLORS = {
+    "expired":  ("#fbe1d6", "#7c2410", "License expired"),
+    "critical": ("#fbe1d6", "#7c2410", "License expires within 24 hours"),
+    "warning":  ("#fff0d0", "#805d0d", "License expires within 7 days"),
+    "notice":   ("#e5f0df", "#234b3b", "License expires within 14 days"),
+}
+
+
+def _expiry_banner(status: dict[str, Any]) -> str:
+    lic = status.get("license") or {}
+    level = lic.get("expiry_warning_level")
+    if not level or level not in _LEVEL_COLORS:
+        return ""
+    bg, fg, label = _LEVEL_COLORS[level]
+    days = lic.get("days_until_expiry")
+    if days is None:
+        when = ""
+    elif days < 0:
+        when = f" ({abs(days)} day(s) ago)"
+    else:
+        when = f" ({days} day(s) remaining)"
+    return (
+        f'<div style="background:{bg};color:{fg};border-radius:14px;padding:12px 16px;'
+        f'margin:14px 0;font-weight:700;">{_esc(label)}{_esc(when)} — '
+        f'<a href="/license" style="color:{fg};text-decoration:underline;">Update license</a></div>'
+    )
+
+
 def _shell(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -189,6 +217,7 @@ def render_landing(status: dict[str, Any]) -> str:
     license_label = "Licensed" if status["license"]["valid"] else "License needed"
     body = f"""
 <main>
+  {_expiry_banner(status)}
   <section class="hero">
     <div>
       <div class="eyebrow">Trust-first inbox automation</div>
@@ -243,6 +272,7 @@ def render_status(status: dict[str, Any]) -> str:
     license_status = status["license"]
     body = f"""
 <main>
+  {_expiry_banner(status)}
   <section class="section panel">
     <div class="eyebrow">Install status</div>
     <h2>MailAI Control Surface</h2>

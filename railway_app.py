@@ -6,7 +6,7 @@ from urllib.parse import parse_qs
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
 from dotenv import load_dotenv
 
 from google_auth_oauthlib.flow import Flow
@@ -23,6 +23,8 @@ from tools.gmail_tool import (
 from tools.s3_state import try_persist_file, try_restore_file
 from tools.license_tool import license_required, save_license_key, verify_license
 from tools.product_pages import render_landing, render_license_page, render_status
+from tools.runtime_state import snapshot as runtime_snapshot, record_heartbeat
+from tools.audit_log import entries_since, recent_entries, summary_counts
 
 
 load_dotenv()
@@ -151,9 +153,47 @@ async def save_license(request: Request):
     return RedirectResponse(url="/license?saved=1", status_code=303)
 
 
-@app.get("/health", response_class=PlainTextResponse)
+@app.get("/health")
 def health():
-    return "ok"
+    record_heartbeat()
+    state = runtime_snapshot()
+    last_24h = entries_since(86400)
+    healthy = bool(state.get("last_run_at")) and int(state.get("consecutive_errors", 0)) < 3
+    body = {
+        "status": "ok" if healthy else "degraded",
+        "authorized": _token_exists(),
+        "dry_run": bool(state.get("dry_run", False)),
+        "last_run_at": state.get("last_run_at"),
+        "last_heartbeat_at": state.get("last_heartbeat_at"),
+        "last_error": state.get("last_error"),
+        "last_error_at": state.get("last_error_at"),
+        "consecutive_errors": int(state.get("consecutive_errors", 0)),
+        "last_run": {
+            "processed": int(state.get("last_processed", 0)),
+            "drafts": int(state.get("last_drafts", 0)),
+            "calendar_events": int(state.get("last_calendar_events", 0)),
+            "errors": int(state.get("last_errors", 0)),
+            "duration_seconds": state.get("last_duration_seconds"),
+        },
+        "totals": {
+            "runs": int(state.get("total_runs", 0)),
+            "processed": int(state.get("total_processed", 0)),
+            "drafts": int(state.get("total_drafts", 0)),
+            "calendar_events": int(state.get("total_calendar_events", 0)),
+        },
+        "last_24h": {
+            "actions": len(last_24h),
+            "by_category": summary_counts(last_24h),
+        },
+        "poll_interval_minutes": int(os.getenv("POLL_INTERVAL_MINUTES", "180") or 180),
+    }
+    return JSONResponse(body, status_code=200 if healthy else 503)
+
+
+@app.get("/audit")
+def audit(limit: int = 100):
+    limit = max(1, min(int(limit or 100), 1000))
+    return JSONResponse({"entries": recent_entries(limit=limit)})
 
 
 @app.get("/login")
