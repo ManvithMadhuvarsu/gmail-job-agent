@@ -200,6 +200,7 @@ def _shell(title: str, body: str) -> str:
       <div class="brand"><span class="mark"></span><span>MailAI</span></div>
       <div class="navlinks">
         <a href="/">Product</a>
+        <a href="/setup">Setup</a>
         <a href="/status">Status</a>
         <a href="/license">License</a>
         <a href="/login">Connect Gmail</a>
@@ -322,3 +323,218 @@ def render_license_page(status: dict[str, Any], saved: bool = False) -> str:
   </section>
 </main>"""
     return _shell("MailAI License", body)
+
+
+SETUP_STEPS = [
+    ("identity", "Your details"),
+    ("gmail",    "Connect Gmail"),
+    ("llm",      "Choose an LLM"),
+    ("calendar", "Calendar reminders"),
+    ("labels",   "Label prefix"),
+    ("safety",   "Safety defaults"),
+    ("done",     "Finish"),
+]
+
+
+def _step_index(step: str) -> int:
+    for i, (key, _label) in enumerate(SETUP_STEPS):
+        if key == step:
+            return i
+    return 0
+
+
+def _setup_progress(step: str, completed: list[str]) -> str:
+    current_idx = _step_index(step)
+    cells = []
+    for i, (key, label) in enumerate(SETUP_STEPS):
+        if key in completed:
+            bg, fg = "#234b3b", "#fffaf0"
+        elif i == current_idx:
+            bg, fg = "#d5a642", "#1f2417"
+        else:
+            bg, fg = "rgba(255,255,255,0.55)", "#5f6f68"
+        cells.append(
+            f'<div style="flex:1;text-align:center;padding:8px 6px;border-radius:14px;'
+            f'background:{bg};color:{fg};font-weight:700;font-size:13px;">'
+            f'{i+1}. {_esc(label)}</div>'
+        )
+    return f'<div style="display:flex;gap:6px;margin:18px 0 24px;flex-wrap:wrap;">{"".join(cells)}</div>'
+
+
+def _btn_row(prev: str | None, next_label: str = "Continue") -> str:
+    prev_html = (
+        f'<a class="button" href="/setup?step={_esc(prev)}">Back</a>' if prev else ""
+    )
+    return (
+        f'<div class="actions" style="margin-top:18px;">'
+        f'{prev_html}'
+        f'<button class="button primary" type="submit">{_esc(next_label)}</button>'
+        f'</div>'
+    )
+
+
+def _input(name: str, value: str, *, label: str, placeholder: str = "", type_: str = "text", helper: str = "") -> str:
+    helper_html = f'<div class="fine">{_esc(helper)}</div>' if helper else ""
+    return f"""
+      <label for="{_esc(name)}" style="display:block;margin-top:14px;"><b>{_esc(label)}</b></label>
+      <input id="{_esc(name)}" name="{_esc(name)}" type="{_esc(type_)}" value="{_esc(value)}"
+             placeholder="{_esc(placeholder)}"
+             style="width:100%;padding:12px 14px;border:1px solid var(--edge);border-radius:14px;
+                    background:rgba(255,255,255,0.7);margin-top:6px;" />
+      {helper_html}
+    """
+
+
+def _toggle(name: str, value: str, *, label: str, helper: str = "") -> str:
+    checked = "checked" if str(value).strip().lower() in {"1", "true", "yes", "on"} else ""
+    helper_html = f'<div class="fine">{_esc(helper)}</div>' if helper else ""
+    return f"""
+      <label style="display:flex;gap:10px;align-items:center;margin-top:14px;">
+        <input type="checkbox" name="{_esc(name)}" value="true" {checked} />
+        <span><b>{_esc(label)}</b></span>
+      </label>
+      {helper_html}
+    """
+
+
+def render_setup(
+    *,
+    step: str,
+    values: dict[str, str],
+    completed: list[str],
+    auth: bool,
+    license_status: dict[str, Any],
+    llm_probe: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> str:
+    progress = _setup_progress(step, completed)
+    error_html = (
+        f'<div style="background:#fbe1d6;color:#7c2410;border-radius:14px;padding:10px 14px;'
+        f'margin-bottom:14px;font-weight:700;">{_esc(error)}</div>' if error else ""
+    )
+
+    if step == "identity":
+        prev = None
+        content = f"""
+        <h2>Tell us who's running this inbox.</h2>
+        <p>MailAI signs drafts with your name and contact details. None of this leaves your machine in Local mode.</p>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="identity" />
+          {_input("YOUR_NAME",     values.get("YOUR_NAME", ""),     label="Full name",    placeholder="Ada Lovelace")}
+          {_input("YOUR_EMAIL",    values.get("YOUR_EMAIL", ""),    label="Reply-to email", placeholder="ada@example.com", type_="email")}
+          {_input("YOUR_PHONE",    values.get("YOUR_PHONE", ""),    label="Phone (optional)",   placeholder="+1 555 0100")}
+          {_input("YOUR_LINKEDIN", values.get("YOUR_LINKEDIN", ""), label="LinkedIn (optional)", placeholder="linkedin.com/in/ada")}
+          {_btn_row(prev)}
+        </form>
+        """
+    elif step == "gmail":
+        gmail_state = "connected" if auth else "not connected"
+        action_label = "Re-connect Gmail" if auth else "Connect Gmail"
+        content = f"""
+        <h2>Connect your Gmail account.</h2>
+        <p>MailAI uses your Gmail OAuth — your messages never reach a MailAI server. Current state: <b>{_esc(gmail_state)}</b>.</p>
+        <div class="actions">
+          <a class="button primary" href="/login">{_esc(action_label)}</a>
+          <a class="button" href="/setup?step=llm">Skip for now</a>
+        </div>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="gmail" />
+          {_btn_row("identity", next_label="Continue")}
+        </form>
+        """
+    elif step == "llm":
+        use_ollama = str(values.get("USE_OLLAMA", "false")).lower() == "true"
+        probe_html = ""
+        if llm_probe:
+            color = "#234b3b" if llm_probe.get("ok") else "#7c2410"
+            bg = "#e5f0df" if llm_probe.get("ok") else "#fbe1d6"
+            probe_html = (
+                f'<div style="background:{bg};color:{color};border-radius:14px;padding:10px 14px;'
+                f'margin-top:14px;font-weight:700;">{_esc(llm_probe.get("detail", ""))}</div>'
+            )
+        content = f"""
+        <h2>Choose how MailAI thinks.</h2>
+        <p>Local Ollama keeps every classification on your machine. Groq is fast and free for low volumes but the email body is sent to Groq's API.</p>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="llm" />
+          {_toggle("USE_OLLAMA", "true" if use_ollama else "", label="Use local Ollama", helper="Recommended for privacy-focused buyers")}
+          {_input("OLLAMA_MODEL",    values.get("OLLAMA_MODEL", "llama3"),                    label="Ollama model")}
+          {_input("OLLAMA_BASE_URL", values.get("OLLAMA_BASE_URL", "http://localhost:11434"), label="Ollama base URL")}
+          {_input("GROQ_API_KEY",    values.get("GROQ_API_KEY", ""),                          label="Groq API key (fallback)", type_="password", helper="Used when Ollama is off or unreachable.")}
+          {probe_html}
+          <div class="actions" style="margin-top:18px;">
+            <a class="button" href="/setup?step=gmail">Back</a>
+            <button class="button" type="submit" name="probe" value="1">Test connection</button>
+            <button class="button primary" type="submit" name="advance" value="1">Continue</button>
+          </div>
+        </form>
+        """
+    elif step == "calendar":
+        enable = str(values.get("ENABLE_CALENDAR_EVENTS", "true")).lower() == "true"
+        content = f"""
+        <h2>Calendar reminders.</h2>
+        <p>MailAI can add interviews, assessments, and deadlines to Google Calendar. Skip this if you only want Gmail labels.</p>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="calendar" />
+          {_toggle("ENABLE_CALENDAR_EVENTS", "true" if enable else "", label="Create Google Calendar events")}
+          {_input("GOOGLE_CALENDAR_ID", values.get("GOOGLE_CALENDAR_ID", "primary"), label="Calendar ID", placeholder="primary")}
+          {_input("CALENDAR_TIMEZONE",  values.get("CALENDAR_TIMEZONE", "Asia/Kolkata"), label="Default timezone", placeholder="Asia/Kolkata")}
+          {_btn_row("llm")}
+        </form>
+        """
+    elif step == "labels":
+        content = f"""
+        <h2>Pick a label prefix.</h2>
+        <p>MailAI groups your job mail under labels. Defaults are <code>Job/Rejection</code>, <code>Job/Interview</code>, etc. Change the prefix below if you prefer a different folder.</p>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="labels" />
+          {_input("LABEL_REJECTION", values.get("LABEL_REJECTION", "Job/Rejection"), label="Rejection")}
+          {_input("LABEL_INTERVIEW", values.get("LABEL_INTERVIEW", "Job/Interview"), label="Interview")}
+          {_input("LABEL_HOLD",      values.get("LABEL_HOLD",      "Job/On-Hold"),   label="On hold")}
+          {_input("LABEL_FOLLOWUP",  values.get("LABEL_FOLLOWUP",  "Job/Follow-Up"), label="Follow-up")}
+          {_input("LABEL_APPLIED",   values.get("LABEL_APPLIED",   "Job/Applied"),   label="Applied")}
+          {_btn_row("calendar")}
+        </form>
+        """
+    elif step == "safety":
+        dry = str(values.get("MAILAI_DRY_RUN", "true")).lower() == "true"
+        drafts_off = str(values.get("DISABLE_DRAFTS", "false")).lower() == "true"
+        content = f"""
+        <h2>Safety defaults.</h2>
+        <p>We recommend starting in dry-run mode so you can watch MailAI for a few cycles before it touches your inbox.</p>
+        <form method="post" action="/setup">
+          <input type="hidden" name="step" value="safety" />
+          {_toggle("MAILAI_DRY_RUN", "true" if dry else "", label="Start in dry-run mode", helper="Classify and audit-log only — no labels, drafts, or calendar events.")}
+          {_toggle("DISABLE_DRAFTS", "true" if drafts_off else "", label="Never create reply drafts", helper="Labels and calendar events still work.")}
+          {_input("POLL_INTERVAL_MINUTES", values.get("POLL_INTERVAL_MINUTES", "180"), label="Polling interval (minutes)", placeholder="180")}
+          {_input("SCAN_DAYS",             values.get("SCAN_DAYS", "1"),               label="Look-back window (days)",     placeholder="1")}
+          {_btn_row("labels", next_label="Finish setup")}
+        </form>
+        """
+    else:  # done
+        license_label = "Licensed" if license_status.get("valid") else "License needed"
+        auth_label = "Connected" if auth else "Not connected"
+        dry = str(values.get("MAILAI_DRY_RUN", "false")).lower() == "true"
+        content = f"""
+        <h2>You're set up.</h2>
+        <p>{('MailAI is running in dry-run mode. Watch a few cycles, then return here to turn it off.' if dry else 'MailAI will start processing on the next daemon cycle.')}</p>
+        <div class="status-line"><span>Gmail</span><b>{_esc(auth_label)}</b></div>
+        <div class="status-line"><span>License</span><b>{_esc(license_label)}</b></div>
+        <div class="status-line"><span>Dry run</span><b>{'On' if dry else 'Off'}</b></div>
+        <div class="actions" style="margin-top:18px;">
+          <a class="button primary" href="/status">Open status</a>
+          <a class="button" href="/">Back to product</a>
+        </div>
+        """
+
+    body = f"""
+<main>
+  <section class="section panel">
+    <div class="eyebrow">Onboarding</div>
+    <h1 style="font-size:clamp(36px,5vw,52px);margin:12px 0 4px;">MailAI setup wizard</h1>
+    {progress}
+    {error_html}
+    {content}
+  </section>
+</main>"""
+    return _shell("MailAI Setup", body)

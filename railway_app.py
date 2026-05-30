@@ -22,9 +22,21 @@ from tools.gmail_tool import (
 )
 from tools.s3_state import try_persist_file, try_restore_file
 from tools.license_tool import license_required, save_license_key, verify_license
-from tools.product_pages import render_landing, render_license_page, render_status
+from tools.product_pages import (
+    SETUP_STEPS,
+    render_landing,
+    render_license_page,
+    render_setup,
+    render_status,
+)
 from tools.runtime_state import snapshot as runtime_snapshot, record_heartbeat
 from tools.audit_log import entries_since, recent_entries, summary_counts
+from tools.setup_config import (
+    apply_to_env as apply_setup_env,
+    load_config as load_setup_config,
+    probe_llm,
+    update_values as update_setup_values,
+)
 
 
 load_dotenv()
@@ -116,6 +128,7 @@ def _startup():
     # Ensure dirs exist for volume mounts
     Path("data").mkdir(exist_ok=True)
     Path("config").mkdir(exist_ok=True)
+    apply_setup_env()
     _materialize_credentials_from_env()
     # If persistent volumes aren't available, optionally restore token from S3-compatible bucket.
     try_restore_file(TOKEN_PATH)
@@ -142,6 +155,86 @@ def status():
 @app.get("/license", response_class=HTMLResponse)
 def license_page(saved: str | None = None):
     return render_license_page(_app_status(), saved=saved == "1")
+
+
+_VALID_STEP_KEYS = {key for key, _ in SETUP_STEPS}
+
+
+def _current_setup_step(requested: str | None, completed: list[str]) -> str:
+    if requested in _VALID_STEP_KEYS:
+        return requested
+    for key, _ in SETUP_STEPS:
+        if key not in completed:
+            return key
+    return "done"
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(step: str | None = None):
+    config = load_setup_config()
+    current = _current_setup_step(step, config.completed_steps)
+    status = _app_status()
+    return render_setup(
+        step=current,
+        values=config.values,
+        completed=config.completed_steps,
+        auth=status["authorized"],
+        license_status=status["license"],
+    )
+
+
+@app.post("/setup", response_class=HTMLResponse)
+async def setup_save(request: Request):
+    form = parse_qs((await request.body()).decode("utf-8", errors="replace"))
+    step = (form.get("step") or [""])[0]
+    if step not in _VALID_STEP_KEYS:
+        return RedirectResponse(url="/setup", status_code=303)
+
+    updates: dict[str, str] = {}
+    for key, values in form.items():
+        if key in {"step", "probe", "advance"}:
+            continue
+        # checkboxes only post when checked; treat absence as "off"
+        updates[key] = values[0] if values else ""
+
+    # Coerce checkbox-style toggles to true/false strings.
+    for toggle_key in ("USE_OLLAMA", "ENABLE_CALENDAR_EVENTS", "MAILAI_DRY_RUN", "DISABLE_DRAFTS"):
+        if toggle_key in updates:
+            updates[toggle_key] = "true" if updates[toggle_key] else "false"
+
+    # If the user didn't include a toggle in the form for this step, treat as off.
+    step_toggles = {
+        "llm": ["USE_OLLAMA"],
+        "calendar": ["ENABLE_CALENDAR_EVENTS"],
+        "safety": ["MAILAI_DRY_RUN", "DISABLE_DRAFTS"],
+    }
+    for key in step_toggles.get(step, []):
+        updates.setdefault(key, "false")
+
+    config = update_setup_values(updates, step=step)
+    apply_setup_env(config)
+
+    if step == "llm" and "probe" in form:
+        status = _app_status()
+        return render_setup(
+            step="llm",
+            values=config.values,
+            completed=config.completed_steps,
+            auth=status["authorized"],
+            license_status=status["license"],
+            llm_probe=probe_llm(),
+        )
+
+    next_step_map = {
+        "identity": "gmail",
+        "gmail":    "llm",
+        "llm":      "calendar",
+        "calendar": "labels",
+        "labels":   "safety",
+        "safety":   "done",
+        "done":     "done",
+    }
+    return RedirectResponse(url=f"/setup?step={next_step_map[step]}", status_code=303)
 
 
 @app.post("/license")
