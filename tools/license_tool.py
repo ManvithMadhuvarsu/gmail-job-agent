@@ -31,6 +31,36 @@ class LicenseStatus:
     features: list[str]
     reason: str
 
+    def days_until_expiry(self) -> int | None:
+        if not self.expires_at:
+            return None
+        try:
+            text = self.expires_at
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                text = f"{text}T23:59:59+00:00"
+            expiry = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            delta = expiry - datetime.now(timezone.utc)
+            return int(delta.total_seconds() // 86400)
+        except ValueError:
+            return None
+
+    def expiry_warning_level(self) -> str | None:
+        """Return 'critical' (<=1d), 'warning' (<=7d), 'notice' (<=14d), or None."""
+        days = self.days_until_expiry()
+        if days is None:
+            return None
+        if days < 0:
+            return "expired"
+        if days <= 1:
+            return "critical"
+        if days <= 7:
+            return "warning"
+        if days <= 14:
+            return "notice"
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "valid": self.valid,
@@ -42,6 +72,8 @@ class LicenseStatus:
             "expires_at": self.expires_at,
             "features": self.features,
             "reason": self.reason,
+            "days_until_expiry": self.days_until_expiry(),
+            "expiry_warning_level": self.expiry_warning_level(),
         }
 
 
