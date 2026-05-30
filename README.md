@@ -19,14 +19,20 @@ The project supports local execution (Python), containerized execution (Docker),
    cp .env.example .env
    ```
 3. Add `GROQ_API_KEY` in `.env`, then provide Gmail OAuth credentials via `config/credentials.json` or `GMAIL_CREDENTIALS_JSON`.
-4. Run once to authorize Gmail:
+4. Verify your install:
    ```bash
-   python main.py
+   python cli.py doctor
    ```
-5. Start continuous mode:
+5. Process emails in safe dry-run mode first:
    ```bash
-   python daemon.py
+   python cli.py run --dry-run
    ```
+6. Start continuous mode:
+   ```bash
+   python cli.py daemon
+   ```
+
+Or use the web onboarding wizard at `/setup` (recommended for non-developer buyers).
 
 ## Core Capabilities
 
@@ -34,6 +40,15 @@ The project supports local execution (Python), containerized execution (Docker),
 - Applies Gmail labels under a consistent `Job/*` taxonomy
 - Optionally generates reply drafts (never auto-sends)
 - Adds important interviews, meetings, assessments, tests, and submission deadlines to Google Calendar
+- Includes a product landing page, `/setup` onboarding wizard, status page, and optional signed license gate for paid local/self-hosted builds
+- Per-email audit log at `data/audit.jsonl` (subject, sender, category, action, draft id, calendar event id)
+- `python cli.py undo --since <window>` reverses recent labels, drafts, and calendar events
+- `python cli.py doctor` self-diagnoses Python version, OAuth scopes, LLM reachability, and data dir permissions
+- `MAILAI_DRY_RUN=true` mode classifies and audit-logs without modifying Gmail or Calendar
+- Pre-LLM allow/deny rules in `data/rules.yaml` or `data/rules.json` for power users
+- `/health` returns last-run state, error counts, and 24h action summary
+- License expiry banners at 14 / 7 / 1 days + optional email reminders via Resend or SMTP
+- Service templates for systemd, launchd, and Windows Scheduler in `packaging/`
 - Runs continuously in daemon mode with configurable polling
 - Supports Groq (cloud LLM) and Ollama (local LLM)
 - Supports historical mailbox backfill without relabeling already-labeled messages
@@ -51,6 +66,8 @@ The project supports local execution (Python), containerized execution (Docker),
 - `backfill.py`: historical labeling pass with date windows
 - `railway_app.py`: web OAuth + background loop for Railway deployments
 - `tools/s3_state.py`: optional S3-compatible token persistence
+- `tools/license_tool.py`: optional offline signed license verification
+- `scripts/generate_license.py`: seller utility for issuing paid licenses
 
 ### Data and State
 
@@ -134,6 +151,19 @@ python main.py
 ```bash
 python daemon.py
 ```
+
+### Product Web Surface
+
+```bash
+set MAILAI_DISABLE_DAEMON=true
+uvicorn railway_app:app --host 0.0.0.0 --port 8080
+```
+
+Open:
+
+- `/` for the public product landing page
+- `/status` for Gmail/license status
+- `/license` to install a signed local license key
 
 ### Backfill Historical Emails
 
@@ -258,7 +288,13 @@ Important variables:
 - Gmail OAuth: `GMAIL_CREDENTIALS_JSON`, `PUBLIC_BASE_URL`
 - LLM: `USE_OLLAMA`, `OLLAMA_MODEL`, `OLLAMA_BASE_URL`, `GROQ_API_KEY`
 - Calendar: `ENABLE_CALENDAR_EVENTS`, `GOOGLE_CALENDAR_ID`, `CALENDAR_TIMEZONE`, `CALENDAR_REMINDER_MINUTES`
+- Licensing: `MAILAI_LICENSE_REQUIRED`, `MAILAI_LICENSE_PUBLIC_KEY`, `MAILAI_LICENSE_KEY`
 - Backfill: `BACKFILL_*`
+
+## Productization
+
+MailAI can be sold as a local/self-hosted product before becoming a hosted SaaS.
+See `docs/PRODUCTIZATION.md` for pricing structure, license issuing, and launch steps.
 
 ## Security Best Practices
 
