@@ -1,0 +1,25 @@
+[Unit]
+Description=MailAI Gmail job-email agent
+Documentation=https://github.com/your-org/mailai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mailai
+EnvironmentFile=%h/mailai/.env
+ExecStart=%h/mailai/.venv/bin/python cli.py daemon
+Restart=on-failure
+RestartSec=15s
+StandardOutput=append:%h/mailai/data/daemon.log
+StandardError=append:%h/mailai/data/daemon.log
+
+# Lock the service down — it only needs to talk to Google and (optionally) S3.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=%h/mailai/data %h/mailai/config
+
+[Install]
+WantedBy=default.target
