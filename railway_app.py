@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import logging
+from urllib.parse import parse_qs
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -20,6 +21,8 @@ from tools.gmail_tool import (
     _materialize_credentials_from_env,
 )
 from tools.s3_state import try_persist_file, try_restore_file
+from tools.license_tool import license_required, save_license_key, verify_license
+from tools.product_pages import render_landing, render_license_page, render_status
 
 
 load_dotenv()
@@ -61,6 +64,14 @@ def _build_flow(request: Request) -> Flow:
 
 def _token_exists() -> bool:
     return TOKEN_PATH.exists()
+
+
+def _app_status() -> dict:
+    return {
+        "authorized": _token_exists(),
+        "poll_interval": os.getenv("POLL_INTERVAL_MINUTES", "180"),
+        "license": verify_license().to_dict(),
+    }
 
 
 def _start_daemon_loop_once():
@@ -109,26 +120,35 @@ def _startup():
     # Fall back to env-backed token bootstrap when S3 restore is unavailable.
     if not TOKEN_PATH.exists():
         materialize_token_pickle_from_env()
+    if os.getenv("MAILAI_DISABLE_DAEMON", "").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.info("Daemon loop disabled by MAILAI_DISABLE_DAEMON.")
+        return
     _start_daemon_loop_once()
 
 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    ok = _token_exists()
-    status = "✅ Authorized" if ok else "⚠️ Not authorized"
-    body = f"""
-    <html>
-      <head><title>MailAI</title></head>
-      <body style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 24px;">
-        <h2>MailAI (Railway)</h2>
-        <p>Status: <b>{status}</b></p>
-        <p>Polling: every <b>{os.getenv("POLL_INTERVAL_MINUTES","180")}</b> minutes</p>
-        <p><a href="/login">Sign in with Google</a></p>
-      </body>
-    </html>
-    """
-    return body
+    return render_landing(_app_status())
+
+
+@app.get("/status", response_class=HTMLResponse)
+def status():
+    return render_status(_app_status())
+
+
+@app.get("/license", response_class=HTMLResponse)
+def license_page(saved: str | None = None):
+    return render_license_page(_app_status(), saved=saved == "1")
+
+
+@app.post("/license")
+async def save_license(request: Request):
+    body = (await request.body()).decode("utf-8", errors="replace")
+    token = (parse_qs(body).get("license_key") or [""])[0].strip()
+    if token:
+        save_license_key(token)
+    return RedirectResponse(url="/license?saved=1", status_code=303)
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -138,6 +158,9 @@ def health():
 
 @app.get("/login")
 def login(request: Request):
+    status = verify_license()
+    if license_required() and not status.valid:
+        return RedirectResponse(url="/license")
     flow = _build_flow(request)
     authorization_url, state = flow.authorization_url(
         access_type="offline",
@@ -172,7 +195,7 @@ def oauth_callback(request: Request, code: str | None = None, state: str | None 
     save_token_pickle(creds)
     # Persist token so redeploys don't require re-auth (S3-compatible bucket).
     try_persist_file(TOKEN_PATH)
-    resp = RedirectResponse(url="/")
+    resp = RedirectResponse(url="/status")
     resp.delete_cookie("oauth_state")
     resp.delete_cookie("oauth_code_verifier")
     return resp
