@@ -15,6 +15,8 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 
+from tools import rules as user_rules
+
 if TYPE_CHECKING:
     from langchain_groq import ChatGroq
 
@@ -107,13 +109,14 @@ def safe_invoke(prompt: ChatPromptTemplate, inputs: dict) -> str:
 
 
 # ── Agent State ───────────────────────────────────────────────────────────────
-class EmailState(TypedDict):
+class EmailState(TypedDict, total=False):
     email:         dict
     category:      str
     action:        str
     draft_subject: str
     draft_body:    str
     reasoning:     str
+    rule_id:       str
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -339,8 +342,29 @@ def _action_from_category(category: str) -> str:
 
 # ── Agent Nodes ───────────────────────────────────────────────────────────────
 def classify_and_action_node(state: EmailState) -> EmailState:
-    """Low-token classify pass + deterministic action mapping (heuristics first)."""
+    """User rules first → cheap heuristics → LLM."""
     email = state["email"]
+
+    rule_match = user_rules.evaluate(email)
+    if rule_match is not None:
+        if rule_match.action == "skip":
+            logger.info(f"Rule {rule_match.rule_id} → SKIP '{email['subject'][:50]}'")
+            return {**state, "category": "IRRELEVANT", "action": "SKIP", "rule_id": rule_match.rule_id}
+        if rule_match.action == "force" and rule_match.category:
+            forced_action = _action_from_category(rule_match.category)
+            if _email_has_noreply_details(email) and forced_action.startswith("DRAFT_"):
+                forced_action = "LABEL_ONLY" if rule_match.category != "IRRELEVANT" else "SKIP"
+            logger.info(
+                f"Rule {rule_match.rule_id} forced '{email['subject'][:50]}' → "
+                f"{rule_match.category} ({forced_action})"
+            )
+            return {
+                **state,
+                "category": rule_match.category,
+                "action": forced_action,
+                "rule_id": rule_match.rule_id,
+            }
+
     heuristic = _heuristic_result(email)
     if heuristic:
         category, action = heuristic
