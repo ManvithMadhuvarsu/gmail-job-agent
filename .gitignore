@@ -4,6 +4,8 @@ config/credentials.json
 data/token.pickle
 *.key
 *.key.pub
+license_private.key
+*.license_private.key
 
 # Runtime data
 data/
