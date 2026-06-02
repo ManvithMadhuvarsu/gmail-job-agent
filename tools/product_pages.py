@@ -201,6 +201,7 @@ def _shell(title: str, body: str) -> str:
       <div class="navlinks">
         <a href="/">Product</a>
         <a href="/setup">Setup</a>
+        <a href="/profile">Profile</a>
         <a href="/status">Status</a>
         <a href="/license">License</a>
         <a href="/login">Connect Gmail</a>
@@ -292,6 +293,98 @@ def render_status(status: dict[str, Any]) -> str:
   </section>
 </main>"""
     return _shell("MailAI Status", body)
+
+
+def _scope_rows(google: dict[str, Any]) -> str:
+    scopes = google.get("scopes") or []
+    missing = set(google.get("missing_scopes") or [])
+    if not scopes:
+        return '<p class="fine">No granted scopes found yet. Connect Google to authorize Gmail and Calendar.</p>'
+    rows = []
+    for scope in scopes:
+        marker = "Missing" if scope in missing else "Granted"
+        rows.append(
+            f'<div class="status-line"><span>{_esc(scope)}</span><b>{_esc(marker)}</b></div>'
+        )
+    for scope in sorted(missing.difference(scopes)):
+        rows.append(
+            f'<div class="status-line"><span>{_esc(scope)}</span><b>Missing</b></div>'
+        )
+    return "".join(rows)
+
+
+def render_profile(
+    *,
+    status: dict[str, Any],
+    google: dict[str, Any],
+    values: dict[str, str],
+    disconnected: bool = False,
+) -> str:
+    license_status = status["license"]
+    google_label = "Connected" if google.get("valid") and not google.get("missing_scopes") else "Needs attention"
+    if not google.get("configured"):
+        google_label = "Not connected"
+    disconnect_notice = (
+        '<p><b>Google token removed.</b> Connect Google again before running MailAI.</p>'
+        if disconnected else ""
+    )
+    env_note = (
+        "<p class=\"fine\">This install also has GMAIL_TOKEN_PICKLE_B64 configured. "
+        "If a hosted deploy keeps reconnecting automatically, remove that env variable too.</p>"
+        if google.get("env_token") else ""
+    )
+    body = f"""
+<main>
+  {_expiry_banner(status)}
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Profile and connections</div>
+      <h1>Connect the user, not a raw token.</h1>
+      <p class="lead">MailAI should get Gmail and Calendar access through Google's OAuth consent screen. Users should not paste Gmail access tokens manually; those tokens expire, rotate, and are tied to the OAuth client.</p>
+      <div class="actions">
+        <a class="button primary" href="/login">Connect or re-authorize Google</a>
+        <a class="button gold" href="/setup">Open setup wizard</a>
+        <a class="button" href="/license">Install license</a>
+      </div>
+    </div>
+    <div class="panel">
+      {disconnect_notice}
+      <h3>Connection summary</h3>
+      <div class="status-line"><span>Google OAuth</span><b>{_esc(google_label)}</b></div>
+      <div class="status-line"><span>Token source</span><b>{_esc(google.get("source") or "none")}</b></div>
+      <div class="status-line"><span>Refresh token</span><b>{'Available' if google.get("has_refresh_token") else 'Not available'}</b></div>
+      <div class="status-line"><span>Expires</span><b>{_esc(google.get("expiry") or "Unknown")}</b></div>
+      <div class="status-line"><span>License</span><b>{_esc(license_status.get("tier"))} / {'valid' if license_status.get("valid") else 'invalid'}</b></div>
+      {env_note}
+      <form method="post" action="/profile/disconnect" style="margin-top:18px;">
+        <button class="button" type="submit">Disconnect local Google token</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="grid">
+      <div class="card">
+        <h3>User identity</h3>
+        <div class="status-line"><span>Name</span><b>{_esc(values.get("YOUR_NAME") or "Not set")}</b></div>
+        <div class="status-line"><span>Email</span><b>{_esc(values.get("YOUR_EMAIL") or "Not set")}</b></div>
+        <div class="status-line"><span>Phone</span><b>{_esc(values.get("YOUR_PHONE") or "Not set")}</b></div>
+        <div class="status-line"><span>LinkedIn</span><b>{_esc(values.get("YOUR_LINKEDIN") or "Not set")}</b></div>
+        <div class="actions"><a class="button" href="/setup?step=identity">Edit identity</a></div>
+      </div>
+      <div class="card">
+        <h3>Access model</h3>
+        <p>Google access is automated after the user clicks Connect Google and approves the requested scopes. The profile page stores only the resulting OAuth credential file locally.</p>
+        <p>License keys are different: those can be pasted safely at <a href="/license">/license</a> because they are signed MailAI product tokens, not Google tokens.</p>
+      </div>
+      <div class="card">
+        <h3>OAuth scopes</h3>
+        {_scope_rows(google)}
+      </div>
+    </div>
+  </section>
+</main>"""
+    return _shell("MailAI Profile", body)
 
 
 def render_license_page(status: dict[str, Any], saved: bool = False) -> str:
