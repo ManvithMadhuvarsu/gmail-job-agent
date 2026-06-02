@@ -119,6 +119,61 @@ def materialize_token_pickle_from_env() -> bool:
     return True
 
 
+def google_token_status(required_scopes: list[str] | None = None) -> dict:
+    """Return safe Google OAuth status for UI pages without exposing token secrets."""
+    required_scopes = required_scopes or SCOPES
+    token_b64 = os.getenv("GMAIL_TOKEN_PICKLE_B64", "").strip()
+    status = {
+        "configured": TOKEN_PATH.exists() or bool(token_b64),
+        "token_file": TOKEN_PATH.exists(),
+        "env_token": bool(token_b64),
+        "valid": False,
+        "expired": False,
+        "has_refresh_token": False,
+        "scopes": [],
+        "missing_scopes": list(required_scopes),
+        "expiry": "",
+        "source": "none",
+        "error": "",
+    }
+
+    creds = None
+    try:
+        if TOKEN_PATH.exists():
+            with open(TOKEN_PATH, "rb") as f:
+                creds = pickle.load(f)
+            status["source"] = "data/token.pickle"
+        elif token_b64:
+            creds = _load_env_token_pickle()
+            status["source"] = "GMAIL_TOKEN_PICKLE_B64"
+    except Exception as exc:
+        status["error"] = f"Could not read Google token: {exc}"
+        return status
+
+    if not creds:
+        return status
+
+    scopes = list(getattr(creds, "scopes", None) or [])
+    expiry = getattr(creds, "expiry", None)
+    status.update({
+        "valid": bool(getattr(creds, "valid", False)),
+        "expired": bool(getattr(creds, "expired", False)),
+        "has_refresh_token": bool(getattr(creds, "refresh_token", None)),
+        "scopes": scopes,
+        "missing_scopes": _missing_scopes(creds, required_scopes),
+        "expiry": expiry.isoformat() if expiry else "",
+    })
+    return status
+
+
+def delete_local_google_token() -> bool:
+    """Disconnect local Google OAuth by removing data/token.pickle."""
+    if not TOKEN_PATH.exists():
+        return False
+    TOKEN_PATH.unlink()
+    return True
+
+
 def _credentials_have_scopes(creds, required_scopes: list[str]) -> bool:
     """Return True if the token already has every required OAuth scope."""
     if not required_scopes:
