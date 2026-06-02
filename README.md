@@ -162,6 +162,7 @@ uvicorn railway_app:app --host 0.0.0.0 --port 8080
 Open:
 
 - `/` for the public product landing page
+- `/profile` for user identity, Google OAuth, and license connection status
 - `/status` for Gmail/license status
 - `/license` to install a signed local license key
 

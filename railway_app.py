@@ -16,6 +16,8 @@ from tools.gmail_tool import (
     SCOPES,
     CREDENTIALS_PATH,
     TOKEN_PATH,
+    delete_local_google_token,
+    google_token_status,
     save_token_pickle,
     materialize_token_pickle_from_env,
     _materialize_credentials_from_env,
@@ -26,6 +28,7 @@ from tools.product_pages import (
     SETUP_STEPS,
     render_landing,
     render_license_page,
+    render_profile,
     render_setup,
     render_status,
 )
@@ -152,6 +155,17 @@ def status():
     return render_status(_app_status())
 
 
+@app.get("/profile", response_class=HTMLResponse)
+def profile(disconnected: str | None = None):
+    config = load_setup_config()
+    return render_profile(
+        status=_app_status(),
+        google=google_token_status(),
+        values=config.values,
+        disconnected=disconnected == "1",
+    )
+
+
 @app.get("/license", response_class=HTMLResponse)
 def license_page(saved: str | None = None):
     return render_license_page(_app_status(), saved=saved == "1")
@@ -244,6 +258,12 @@ async def save_license(request: Request):
     if token:
         save_license_key(token)
     return RedirectResponse(url="/license?saved=1", status_code=303)
+
+
+@app.post("/profile/disconnect")
+def disconnect_profile_google():
+    delete_local_google_token()
+    return RedirectResponse(url="/profile?disconnected=1", status_code=303)
 
 
 @app.get("/health")
