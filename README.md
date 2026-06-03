@@ -163,8 +163,11 @@ Open:
 
 - `/` for the public product landing page
 - `/profile` for user identity, Google OAuth, and license connection status
-- `/status` for Gmail/license status
+- `/status` for Gmail/license status, latest run telemetry, and a guarded manual "Run MailAI now" control
 - `/license` to install a signed local license key
+
+The `/status` manual run button starts one background processing cycle and is dry-run by default.
+Uncheck dry-run only when you are ready for live Gmail labels, drafts, and Calendar events.
 
 ### Backfill Historical Emails
 

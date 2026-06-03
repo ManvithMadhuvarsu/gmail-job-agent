@@ -174,6 +174,35 @@ def _shell(title: str, body: str) -> str:
     .checklist li {{ padding: 9px 0; color: var(--muted); border-top: 1px solid rgba(16,32,27,0.08); }}
     .status-line {{ display: flex; justify-content: space-between; gap: 16px; padding: 13px 0; border-bottom: 1px solid rgba(16,32,27,0.1); }}
     .status-line b {{ text-align: right; }}
+    .notice {{
+      border: 1px solid rgba(35,75,59,0.18);
+      background: rgba(229,240,223,0.78);
+      color: var(--moss);
+      border-radius: 18px;
+      padding: 13px 16px;
+      font-weight: 800;
+      margin: 16px 0;
+    }}
+    .run-panel {{
+      display: grid;
+      grid-template-columns: 1fr 0.82fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-top: 18px;
+    }}
+    .switch-row {{
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      border: 1px solid rgba(16,32,27,0.12);
+      background: rgba(255,255,255,0.48);
+      border-radius: 22px;
+      padding: 15px;
+      margin: 16px 0;
+    }}
+    .switch-row input {{ width: 20px; height: 20px; margin-top: 2px; accent-color: var(--moss); }}
+    button.button {{ cursor: pointer; font-family: inherit; }}
+    button.button:disabled {{ cursor: not-allowed; opacity: 0.52; }}
     .formbox textarea {{
       width: 100%;
       min-height: 170px;
@@ -188,6 +217,7 @@ def _shell(title: str, body: str) -> str:
     footer {{ padding: 34px 0 44px; color: var(--muted); }}
     @media (max-width: 880px) {{
       .hero, .grid {{ grid-template-columns: 1fr; }}
+      .run-panel {{ grid-template-columns: 1fr; }}
       .inbox-card {{ transform: none; min-height: auto; }}
       .metric-row {{ grid-template-columns: 1fr; }}
       .nav {{ align-items: flex-start; gap: 14px; flex-direction: column; }}
@@ -270,8 +300,32 @@ def render_landing(status: dict[str, Any]) -> str:
     return _shell("MailAI - Trust-first Gmail agent", body)
 
 
+def _manual_run_label(manual_run: dict[str, Any]) -> str:
+    status = manual_run.get("status")
+    if not status:
+        return "No manual run yet"
+    if status == "running":
+        return "Running now"
+    if status == "completed":
+        return "Last manual run completed"
+    if status == "failed":
+        return "Last manual run failed"
+    return str(status).replace("_", " ").title()
+
+
 def render_status(status: dict[str, Any]) -> str:
     license_status = status["license"]
+    runtime = status.get("runtime") or {}
+    manual_run = runtime.get("manual_run") or {}
+    manual_notice = status.get("manual_notice")
+    notice_html = f'<div class="notice">{_esc(manual_notice)}</div>' if manual_notice else ""
+    run_disabled = "disabled" if not status["authorized"] else ""
+    manual_mode = "Dry-run only" if manual_run.get("dry_run") else "Live writes allowed"
+    if not manual_run:
+        manual_mode = "Not selected yet"
+    manual_error = manual_run.get("error") or "None"
+    last_duration = runtime.get("last_duration_seconds")
+    duration_label = f"{last_duration}s" if last_duration is not None else "Not recorded"
     body = f"""
 <main>
   {_expiry_banner(status)}
@@ -279,6 +333,7 @@ def render_status(status: dict[str, Any]) -> str:
     <div class="eyebrow">Install status</div>
     <h2>MailAI Control Surface</h2>
     <p>This page shows whether the product build can process Gmail and Calendar events.</p>
+    {notice_html}
     <div class="status-line"><span>Gmail OAuth</span><b>{'Authorized' if status["authorized"] else 'Not authorized'}</b></div>
     <div class="status-line"><span>License valid</span><b>{'Yes' if license_status["valid"] else 'No'}</b></div>
     <div class="status-line"><span>License required</span><b>{'Yes' if license_status["required"] else 'No'}</b></div>
@@ -289,6 +344,35 @@ def render_status(status: dict[str, Any]) -> str:
     <div class="actions">
       <a class="button primary" href="/login">Connect Gmail</a>
       <a class="button gold" href="/license">Update License</a>
+    </div>
+  </section>
+  <section class="section run-panel">
+    <div class="panel">
+      <div class="eyebrow">Run now</div>
+      <h2 style="font-size:clamp(38px,5vw,58px);">Trigger a safe mailbox cycle.</h2>
+      <p>Start a one-shot MailAI run from the browser. It uses the same Gmail, Calendar, labels, and LLM pipeline as the daemon, but defaults to dry-run so you can verify decisions before touching the inbox.</p>
+      <form method="post" action="/run-now">
+        <label class="switch-row">
+          <input type="checkbox" name="dry_run" value="true" checked />
+          <span><b>Dry-run only</b><br><span class="fine">Classify and audit-log without creating labels, drafts, or Calendar events. Uncheck only when you are ready for live writes.</span></span>
+        </label>
+        <button class="button primary" type="submit" {run_disabled}>Run MailAI now</button>
+      </form>
+      <p class="fine">The button is disabled until Gmail OAuth is connected. Only one MailAI cycle can run at a time.</p>
+    </div>
+    <div class="panel">
+      <div class="eyebrow">Latest activity</div>
+      <div class="status-line"><span>Manual run</span><b>{_esc(_manual_run_label(manual_run))}</b></div>
+      <div class="status-line"><span>Manual mode</span><b>{_esc(manual_mode)}</b></div>
+      <div class="status-line"><span>Manual started</span><b>{_esc(manual_run.get("started_at") or "Not recorded")}</b></div>
+      <div class="status-line"><span>Manual finished</span><b>{_esc(manual_run.get("finished_at") or "Not recorded")}</b></div>
+      <div class="status-line"><span>Manual error</span><b>{_esc(manual_error)}</b></div>
+      <div class="status-line"><span>Last cycle</span><b>{_esc(runtime.get("last_run_at") or "Not recorded")}</b></div>
+      <div class="status-line"><span>Duration</span><b>{_esc(duration_label)}</b></div>
+      <div class="status-line"><span>Processed</span><b>{_esc(runtime.get("last_processed", 0))}</b></div>
+      <div class="status-line"><span>Drafts</span><b>{_esc(runtime.get("last_drafts", 0))}</b></div>
+      <div class="status-line"><span>Calendar events</span><b>{_esc(runtime.get("last_calendar_events", 0))}</b></div>
+      <div class="status-line"><span>Errors</span><b>{_esc(runtime.get("last_errors", 0))}</b></div>
     </div>
   </section>
 </main>"""

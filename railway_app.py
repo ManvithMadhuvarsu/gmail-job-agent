@@ -32,7 +32,12 @@ from tools.product_pages import (
     render_setup,
     render_status,
 )
-from tools.runtime_state import snapshot as runtime_snapshot, record_heartbeat
+from tools.runtime_state import (
+    snapshot as runtime_snapshot,
+    record_heartbeat,
+    record_manual_run_finished,
+    record_manual_run_started,
+)
 from tools.audit_log import entries_since, recent_entries, summary_counts
 from tools.setup_config import (
     apply_to_env as apply_setup_env,
@@ -44,6 +49,7 @@ from tools.setup_config import (
 
 load_dotenv()
 logger = logging.getLogger("railway_app")
+_run_lock = threading.Lock()
 
 
 def _public_base_url(request: Request) -> str:
@@ -88,7 +94,35 @@ def _app_status() -> dict:
         "authorized": _token_exists(),
         "poll_interval": os.getenv("POLL_INTERVAL_MINUTES", "180"),
         "license": verify_license().to_dict(),
+        "runtime": runtime_snapshot(),
     }
+
+
+def _manual_status_message(code: str | None) -> str | None:
+    messages = {
+        "started": "Manual run started. Refresh this page in a minute to watch the latest stats update.",
+        "busy": "MailAI is already running a cycle. Wait for it to finish before starting another one.",
+        "auth": "Connect Gmail before starting a manual run.",
+    }
+    return messages.get(code or "")
+
+
+def _run_mailai_once_from_web(*, dry_run: bool) -> None:
+    previous_dry_run = os.environ.get("MAILAI_DRY_RUN")
+    os.environ["MAILAI_DRY_RUN"] = "true" if dry_run else "false"
+    try:
+        run()
+    except BaseException as exc:
+        logger.exception("Manual MailAI run failed")
+        record_manual_run_finished(dry_run=dry_run, ok=False, error=str(exc))
+    else:
+        record_manual_run_finished(dry_run=dry_run, ok=True)
+    finally:
+        if previous_dry_run is None:
+            os.environ.pop("MAILAI_DRY_RUN", None)
+        else:
+            os.environ["MAILAI_DRY_RUN"] = previous_dry_run
+        _run_lock.release()
 
 
 def _start_daemon_loop_once():
@@ -105,8 +139,14 @@ def _start_daemon_loop_once():
         while True:
             try:
                 if _token_exists():
-                    run()
-                    consecutive_errors = 0
+                    if not _run_lock.acquire(blocking=False):
+                        logger.warning("Skipping daemon cycle because another MailAI run is active")
+                    else:
+                        try:
+                            run()
+                            consecutive_errors = 0
+                        finally:
+                            _run_lock.release()
                 else:
                     logger.warning("No token yet. Waiting for user OAuth at /login")
             except Exception:
@@ -151,8 +191,33 @@ def home():
 
 
 @app.get("/status", response_class=HTMLResponse)
-def status():
-    return render_status(_app_status())
+def status(manual: str | None = None):
+    app_status = _app_status()
+    app_status["manual_notice"] = _manual_status_message(manual)
+    return render_status(app_status)
+
+
+@app.post("/run-now")
+async def run_now(request: Request):
+    body = (await request.body()).decode("utf-8", errors="replace")
+    form = parse_qs(body)
+    dry_run = (form.get("dry_run") or [""])[0].strip().lower() in {"1", "true", "yes", "on"}
+
+    if not _token_exists():
+        return RedirectResponse(url="/status?manual=auth", status_code=303)
+
+    if not _run_lock.acquire(blocking=False):
+        return RedirectResponse(url="/status?manual=busy", status_code=303)
+
+    record_manual_run_started(dry_run=dry_run, source="web")
+    thread = threading.Thread(
+        target=_run_mailai_once_from_web,
+        kwargs={"dry_run": dry_run},
+        name="mailai-manual-run",
+        daemon=True,
+    )
+    thread.start()
+    return RedirectResponse(url="/status?manual=started", status_code=303)
 
 
 @app.get("/profile", response_class=HTMLResponse)

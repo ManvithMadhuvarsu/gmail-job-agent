@@ -85,5 +85,39 @@ def record_heartbeat() -> None:
     _write(state)
 
 
+def record_manual_run_started(*, dry_run: bool, source: str = "web") -> None:
+    """Track a user-triggered run so the status dashboard can show progress."""
+    state = _read()
+    state["manual_run"] = {
+        "status": "running",
+        "source": source,
+        "dry_run": bool(dry_run),
+        "started_at": _now(),
+        "finished_at": None,
+        "error": None,
+        "pid": os.getpid(),
+    }
+    _write(state)
+
+
+def record_manual_run_finished(*, dry_run: bool, ok: bool, error: str | None = None) -> None:
+    """Mark the current manual run as finished without changing run totals."""
+    state = _read()
+    manual_run = dict(state.get("manual_run") or {})
+    manual_run.update(
+        {
+            "status": "completed" if ok else "failed",
+            "dry_run": bool(dry_run),
+            "finished_at": _now(),
+            "error": error,
+            "pid": os.getpid(),
+        }
+    )
+    manual_run.setdefault("source", "web")
+    manual_run.setdefault("started_at", None)
+    state["manual_run"] = manual_run
+    _write(state)
+
+
 def snapshot() -> dict[str, Any]:
     return _read()
