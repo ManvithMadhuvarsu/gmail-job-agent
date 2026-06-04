@@ -24,10 +24,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("mailai.cli")
+
+
+def _load_cli_env() -> None:
+    """Make CLI commands honor the same .env file as main.py and railway_app.py."""
+    load_dotenv(ROOT / ".env")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -315,6 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _load_cli_env()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

@@ -88,6 +88,21 @@ def test_doctor_runs_without_crashing(capsys, isolated_data, monkeypatch):
     assert rc in (0, 1)
 
 
+def test_doctor_loads_dotenv_for_llm_config(capsys, isolated_data, monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("USE_OLLAMA=false\nGROQ_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("USE_OLLAMA", raising=False)
+
+    rc = cli.main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert rc in (0, 1)
+    assert "Groq API key set" in out
+    assert "GROQ_API_KEY configured" in out
+
+
 def test_rules_init_writes_example(capsys, tmp_path, monkeypatch):
     from tools import rules
     target = tmp_path / "rules.json"
